@@ -72,7 +72,7 @@ header h1 {
 .app-grid {
     display: grid;
     grid-template-columns: 2fr 1fr;
-    grid-template-rows: auto auto;
+    grid-template-rows: 2fr 1fr;
     gap: 1rem;
     height: calc(100vh - 150px);
 }
@@ -95,11 +95,14 @@ header h1 {
 .tag-panel {
     grid-column: 2;
     grid-row: 1;
+    display: flex;
+    flex-direction: column;
 }
 
 .session-panel {
     grid-column: 2;
     grid-row: 2;
+    max-height: 170px;
 }
 
 h2 {
@@ -152,21 +155,61 @@ h3 {
 /* Tag Panel */
 .tag-controls {
     display: grid;
-    grid-template-columns: 1fr auto;
-    gap: 0.5rem;
+    grid-template-columns: 1fr auto auto;
+    gap: 0.75rem;
     margin-bottom: 1rem;
 }
 
 #tag-filter {
     grid-column: 1 / span 2;
+    padding: 0.6rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    font-size: 1rem;
 }
 
 #new-tag {
     grid-column: 1;
+    padding: 0.6rem;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    font-size: 1rem;
+    max-width: 200px;
+}
+
+#new-tag:focus {
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 2px rgba(79, 195, 247, 0.2);
+    outline: none;
 }
 
 #add-tag-button {
     grid-column: 2;
+    background-color: var(--accent-color);
+    color: white;
+    white-space: nowrap;
+}
+
+#add-tag-button:hover {
+    background-color: var(--secondary-color);
+}
+
+#save-tags-button {
+    grid-column: 3;
+    background-color: var(--success-color);
+    color: white;
+    white-space: nowrap;
+    transition: all 0.3s;
+}
+
+#save-tags-button:disabled {
+    background-color: var(--disabled-color);
+    color: #666;
+}
+
+#save-tags-button:not(:disabled):hover {
+    background-color: #43a047;
+    transform: translateY(-1px);
 }
 
 .tags-container {
@@ -174,14 +217,19 @@ h3 {
     overflow-y: auto;
     border: 1px solid var(--border-color);
     border-radius: 4px;
-    padding: 0.5rem;
+    padding: 0.75rem;
     margin-bottom: 1rem;
+    background-color: #fafafa;
+    min-height: 300px;
 }
 
 .tag-list {
     display: flex;
     flex-wrap: wrap;
     gap: 0.5rem;
+    margin-bottom: 0.5rem;
+    max-height: 100%;
+    overflow-y: auto;
 }
 
 .tag {
@@ -193,34 +241,74 @@ h3 {
     font-size: 0.9rem;
     cursor: pointer;
     transition: all 0.2s;
+    margin-bottom: 0.25rem;
+    user-select: none;
 }
 
 .tag.selected {
     background-color: var(--accent-color);
     color: white;
     border-color: var(--accent-color);
+    font-weight: 500;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
 .tag:hover {
     background-color: var(--border-color);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.tag.selected:hover {
+    background-color: var(--secondary-color);
+    border-color: var(--secondary-color);
+}
+
+.tag::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0.4rem;
+    width: 0;
+    height: 0;
+    background: transparent;
+    transition: all 0.2s;
+    transform: translateY(-50%);
+    opacity: 0;
+}
+
+.tag.selected::before {
+    content: '✓';
+    width: auto;
+    height: auto;
+    opacity: 0.8;
+    font-size: 0.7rem;
+    left: 0.4rem;
 }
 
 .tag-actions {
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0.5rem;
 }
 
 /* Session Panel */
 .session-info {
-    margin-bottom: 1rem;
+    margin-bottom: 0.5rem;
+}
+
+.session-info p {
+    margin-bottom: 0.5rem;
+    font-size: 0.9rem;
 }
 
 .progress-bar-container {
-    height: 0.5rem;
+    height: 10px;
     background-color: var(--light-bg);
-    border-radius: 4px;
-    margin-top: 0.5rem;
+    border-radius: 5px;
     overflow: hidden;
+    margin-bottom: 0.75rem;
 }
 
 .progress-bar {

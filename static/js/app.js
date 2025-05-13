@@ -15,6 +15,13 @@ import { sessionManager } from './sessionManager.js';
 async function initializeApp() {
     console.log('Initializing application...');
 
+    // Update connection status indicator
+    const connectionStatus = document.getElementById('connection-status');
+    document.addEventListener('ws:connectionStatusChanged', (e) => {
+        connectionStatus.textContent = e.detail.connected ? 'Connected' : 'Disconnected';
+        connectionStatus.className = 'status-indicator ' + (e.detail.connected ? 'connected' : 'disconnected');
+    });
+
     // Set up event listener for image loading
     document.getElementById('preview-image').addEventListener('load', function (event) {
         // Update image dimensions when loaded
@@ -38,8 +45,32 @@ async function initializeApp() {
         }
     });
 
+    // Set up event listener for tag updates to refresh the UI
+    document.addEventListener('ws:tag_update', (e) => {
+        console.log('Tag update received in app.js:', e.detail);
+        // Signal other components that tags have been updated
+        document.dispatchEvent(new CustomEvent('tagsUpdated', {
+            detail: e.detail
+        }));
+    });
+
+    document.addEventListener('ws:tags_update', (e) => {
+        console.log('Tags update received in app.js:', e.detail);
+        // Signal other components that the tag list has been updated
+        document.dispatchEvent(new CustomEvent('tagsListUpdated', {
+            detail: e.detail
+        }));
+    });
+
     // Connect to WebSocket server
     await websocket.connect();
+
+    // Load initial tags via HTTP API as a fallback
+    try {
+        await tagManager.loadTags();
+    } catch (error) {
+        console.error('Error loading initial tags:', error);
+    }
 
     // Initialize components
     await sessionManager.initialize();

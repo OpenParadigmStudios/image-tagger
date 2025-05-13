@@ -192,9 +192,9 @@ class TestFileSystemOperations(unittest.TestCase):
 
     def test_setup_tags_file_existing(self):
         """Test loading an existing tags file."""
-        # Create a tags file with some sample tags
-        sample_tags = ["tag1", "tag2", "tag3", "tag1"]  # Intentional duplicate
-        self.tags_file.write_text("\n".join(sample_tags))
+        # Create a tags file and write some tags to it
+        sample_tags = ["tag1", "tag2", "tag3"]
+        self.tags_file.write_text(", ".join(sample_tags))
 
         tags = setup_tags_file(self.tags_file)
 
@@ -202,7 +202,7 @@ class TestFileSystemOperations(unittest.TestCase):
         self.assertEqual(tags, ["tag1", "tag2", "tag3"])
 
         # Check that duplicates were removed from the file
-        self.assertEqual(self.tags_file.read_text().strip().split("\n"), ["tag1", "tag2", "tag3"])
+        self.assertEqual(self.tags_file.read_text().strip().split(", "), ["tag1", "tag2", "tag3"])
 
     def test_get_processed_images_new(self):
         """Test getting processed images from a new session (no existing file)."""

@@ -86,16 +86,17 @@ async def add_tags(
 
         # Save if there were changes
         if updated:
-            async def write_tags():
+            # Use a direct file write within a threadpool instead of nested coroutine
+            def direct_write():
                 with tags_file_path.open('w', encoding='utf-8') as f:
-                    f.write('\n'.join(existing_tags))
+                    f.write(', '.join(existing_tags))
 
-            await run_in_threadpool(write_tags)
+            await run_in_threadpool(direct_write)
 
             # Broadcast update to clients
             if state["connection_manager"]:
-                state["connection_manager"].broadcast_json({
-                    "type": "tags_updated",
+                await state["connection_manager"].broadcast_json({
+                    "type": "tags_update",
                     "data": {"tags": existing_tags}
                 })
 
@@ -135,16 +136,17 @@ async def delete_tags(
 
         # Save if there were changes
         if updated:
-            async def write_tags():
+            # Use a direct file write within a threadpool instead of nested coroutine
+            def direct_write():
                 with tags_file_path.open('w', encoding='utf-8') as f:
-                    f.write('\n'.join(existing_tags))
+                    f.write(', '.join(existing_tags))
 
-            await run_in_threadpool(write_tags)
+            await run_in_threadpool(direct_write)
 
             # Broadcast update to clients
             if state["connection_manager"]:
-                state["connection_manager"].broadcast_json({
-                    "type": "tags_updated",
+                await state["connection_manager"].broadcast_json({
+                    "type": "tags_update",
                     "data": {"tags": existing_tags}
                 })
 
@@ -173,15 +175,15 @@ async def replace_tags(
         tags_file_path = state["tags_file_path"]
 
         # Replace tags
-        async def write_tags():
+        def direct_write():
             with tags_file_path.open('w', encoding='utf-8') as f:
-                f.write('\n'.join(tags_update.tags))
+                f.write(', '.join(tags_update.tags))
 
-        await run_in_threadpool(write_tags)
+        await run_in_threadpool(direct_write)
 
         # Broadcast update to clients
         if state["connection_manager"]:
-            state["connection_manager"].broadcast_json({
+            await state["connection_manager"].broadcast_json({
                 "type": "tags_replaced",
                 "data": {"tags": tags_update.tags}
             })
@@ -239,7 +241,7 @@ async def update_session_tags(
 
         # Broadcast update
         if state["connection_manager"]:
-            state["connection_manager"].broadcast_json({
+            await state["connection_manager"].broadcast_json({
                 "type": "session_tags_updated",
                 "data": {"tags": tags_update.tags}
             })

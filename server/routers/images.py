@@ -8,9 +8,11 @@ from typing import List, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
 
 from models.api import ImageInfo, ImageList, ImageTags
 from core.image_processing import validate_image_with_pillow
+from core.tagging import save_image_tags, save_tags
 from server.utils import get_image_by_id, ensure_image_processed, validate_and_load_tags
 
 # Create router
@@ -213,7 +215,7 @@ async def get_image_tags(
         if str(img_path) in state["session_state"].processed_images:
             relative_path = state["session_state"].processed_images.get(str(img_path))
             if relative_path:
-                processed_path = state["config"].input_directory / relative_path
+                processed_path = Path(relative_path)  # This is already the full path
                 txt_path = processed_path.with_suffix(".txt")
 
                 if txt_path.exists():
@@ -250,19 +252,18 @@ async def update_image_tags(
         img_path, _ = get_image_by_id(image_id, state)
 
         # Process the image if not already processed
-        processed_path, txt_path = ensure_image_processed(img_path, state)
+        processed_path, txt_path = await ensure_image_processed(img_path, state)
 
-        # Update tags in text file
-        with txt_path.open('w', encoding='utf-8') as f:
-            f.write('\n'.join(tags_data.tags))
+        # Update tags in text file using our improved save_image_tags function
+        await run_in_threadpool(save_image_tags, txt_path, tags_data.tags)
 
         # Update master tags list
-        update_master_tags_list(tags_data.tags, state["tags_file_path"])
+        await run_in_threadpool(update_master_tags_list, tags_data.tags, state["tags_file_path"])
 
         # Broadcast update to connected clients
         if state["connection_manager"]:
-            state["connection_manager"].broadcast_json({
-                "type": "tags_updated",
+            await state["connection_manager"].broadcast_json({
+                "type": "tag_update",
                 "data": {
                     "image_id": image_id,
                     "tags": tags_data.tags
@@ -298,8 +299,7 @@ def update_master_tags_list(new_tags: List[str], tags_file_path: Path) -> None:
 
         # Only write if there were changes
         if updated:
-            with tags_file_path.open('w', encoding='utf-8') as f:
-                f.write('\n'.join(existing_tags))
+            save_tags(tags_file_path, existing_tags)
             logging.debug(f"Updated master tags list with {len(new_tags)} tags")
     except Exception as e:
         logging.error(f"Error updating master tags list: {e}")

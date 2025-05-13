@@ -52,14 +52,19 @@ def setup_signal_handlers() -> None:
     Set up signal handlers for graceful shutdown.
     """
     def sync_broadcast(message):
-        """Helper to send sync broadcast message."""
-        if "connection_manager" in app_state and app_state["connection_manager"]:
+        """Broadcast a message to all connected clients."""
+        try:
+            # Check if we have an event loop and it's running
             try:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 if loop.is_running():
-                    # The message will be sent by server shutdown handlers
-                    logging.info("Skipping broadcast during shutdown in running loop")
-                    return
+                    if app_state["shutdown_event"].is_set():
+                        # The message will be sent by server shutdown handlers
+                        logging.info("Skipping broadcast during shutdown in running loop")
+                        return
+                    else:
+                        # Run the coroutine in the existing loop
+                        asyncio.create_task(app_state["connection_manager"].broadcast_json(message))
                 else:
                     # Create a new event loop if needed
                     loop = asyncio.new_event_loop()
@@ -68,8 +73,16 @@ def setup_signal_handlers() -> None:
                         app_state["connection_manager"].broadcast_json(message)
                     )
                     loop.close()
-            except Exception as e:
-                logging.error(f"Error in sync broadcast: {e}")
+            except RuntimeError:
+                # No running event loop, create a new one
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(
+                    app_state["connection_manager"].broadcast_json(message)
+                )
+                loop.close()
+        except Exception as e:
+            logging.error(f"Error in sync broadcast: {e}")
 
     def handle_shutdown(sig, frame):
         logging.info(f"Received signal {sig}, initiating graceful shutdown...")

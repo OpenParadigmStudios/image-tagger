@@ -41,7 +41,7 @@ def get_image_by_id(image_id: str, app_state: Dict[str, Any]) -> Tuple[Path, int
         raise HTTPException(status_code=400, detail="Invalid image ID")
 
 
-def ensure_image_processed(
+async def ensure_image_processed(
     image_path: Path,
     app_state: Dict[str, Any]
 ) -> Tuple[Path, Path]:
@@ -64,15 +64,23 @@ def ensure_image_processed(
 
     # Check if image has already been processed
     if str(image_path) in session_manager.state.processed_images:
-        relative_path = session_manager.state.processed_images.get(str(image_path))
-        processed_path = config.input_directory / relative_path
+        # The value in processed_images is the full path to the processed image
+        processed_path_str = session_manager.state.processed_images.get(str(image_path))
+        processed_path = Path(processed_path_str)
         txt_path = processed_path.with_suffix(".txt")
+
+        logging.debug(f"Using existing processed image: {processed_path}")
+        logging.debug(f"Using existing text file: {txt_path}")
 
         return processed_path, txt_path
 
     # Process the image
     try:
-        updated_dict, output_image_path, txt_file_path = process_image(
+        from fastapi.concurrency import run_in_threadpool
+
+        # Run image processing in a thread pool to avoid blocking
+        updated_dict, output_image_path, txt_file_path = await run_in_threadpool(
+            process_image,
             image_path,
             output_dir,
             config.prefix,
@@ -84,7 +92,7 @@ def ensure_image_processed(
             session_manager.update_processed_image(orig_path, new_path)
 
         # Save session state
-        session_manager.save()
+        await run_in_threadpool(session_manager.save)
 
         # Update stats and broadcast to clients
         new_stats = {
@@ -95,7 +103,7 @@ def ensure_image_processed(
 
         # Broadcast update if connection manager exists
         if app_state["connection_manager"]:
-            app_state["connection_manager"].broadcast_json({
+            await app_state["connection_manager"].broadcast_json({
                 "type": "stats_update",
                 "data": new_stats
             })
@@ -132,8 +140,28 @@ def validate_and_load_tags(
             else:
                 raise HTTPException(status_code=404, detail="Tags file not found")
 
-        # Load tags from file
-        tags = [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+        # Load tags from file using direct file opening for better control
+        with open(tags_file_path, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+
+        # Handle both comma-delimited and newline-delimited formats for backward compatibility
+        if ',' in content:
+            # Split by commas and clean up
+            tags = [tag.strip() for tag in content.split(',') if tag.strip()]
+        else:
+            # Fall back to newline splitting for backward compatibility
+            tags = [line.strip() for line in content.splitlines() if line.strip()]
+
+        # Log the format detected for debugging
+        if ',' in content:
+            logging.debug(f"Loaded {len(tags)} tags from {tags_file_path} using comma delimiter")
+        else:
+            logging.debug(f"Loaded {len(tags)} tags from {tags_file_path} using newline delimiter")
+            # Convert to comma format for consistency - rewrite the file
+            with open(tags_file_path, 'w', encoding='utf-8') as f:
+                f.write(', '.join(tags))
+            logging.info(f"Converted {tags_file_path} from newline to comma-delimited format")
+
         return tags
     except Exception as e:
         logging.error(f"Failed to load tags from {tags_file_path}: {e}")

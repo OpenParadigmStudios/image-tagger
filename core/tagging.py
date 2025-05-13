@@ -65,7 +65,16 @@ def load_tags(tags_file_path: Path) -> List[str]:
         List[str]: List of tags
     """
     try:
-        tags = [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+        content = tags_file_path.read_text(encoding='utf-8').strip()
+
+        # Handle both comma-delimited and newline-delimited formats for backward compatibility
+        if ',' in content:
+            # Split by commas and clean up
+            tags = [tag.strip() for tag in content.split(',') if tag.strip()]
+        else:
+            # Fall back to newline splitting for backward compatibility
+            tags = [line.strip() for line in content.splitlines() if line.strip()]
+
         unique_tags = sorted(set(tags))
 
         # If there were duplicates, rewrite the file with unique tags
@@ -99,9 +108,12 @@ def save_tags(tags_file_path: Path, tags_list: List[str]) -> bool:
         create_backup(tags_file_path)
 
     try:
-        # Write tags to file, one per line
-        tags_file_path.write_text('\n'.join(sorted(tags_list)), encoding='utf-8')
-        logging.debug(f"Saved {len(tags_list)} tags to {tags_file_path}")
+        # Write tags to file as comma-delimited list without extra spaces around commas
+        content = ", ".join([tag.strip() for tag in sorted(tags_list)])
+        with open(tags_file_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        logging.debug(f"Saved {len(tags_list)} tags to {tags_file_path} as comma-delimited list")
         return True
     except Exception as e:
         error_msg = f"Error saving tags to {tags_file_path}: {e}"
@@ -185,7 +197,16 @@ def get_image_tags(text_file_path: Path) -> List[str]:
         return []
 
     try:
-        tags = [line.strip() for line in text_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+        content = text_file_path.read_text(encoding='utf-8').strip()
+
+        # Handle both comma-delimited and newline-delimited formats for backward compatibility
+        if ',' in content:
+            # Split by commas and clean up
+            tags = [tag.strip() for tag in content.split(',') if tag.strip()]
+        else:
+            # Fall back to newline splitting for backward compatibility
+            tags = [line.strip() for line in content.splitlines() if line.strip()]
+
         # Return list with duplicates removed
         return sorted(set(tags))
     except Exception as e:
@@ -206,19 +227,33 @@ def save_image_tags(text_file_path: Path, tags_list: List[str]) -> bool:
         bool: True if save was successful
     """
     try:
+        logging.info(f"Saving tags to {text_file_path}")
+
         # Create backup of existing file
         if text_file_path.exists():
             from core.filesystem import create_backup
             create_backup(text_file_path)
+            logging.info(f"Created backup of {text_file_path}")
+
+            # Delete the existing file to ensure a clean slate
+            try:
+                text_file_path.unlink()
+                logging.info(f"Deleted existing file {text_file_path}")
+            except Exception as e:
+                logging.error(f"Error deleting {text_file_path}: {e}")
+                # Even if delete fails, we'll overwrite the file anyway
 
         # Create parent directory if it doesn't exist
         text_file_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Save tags, one per line
-        text_file_path.write_text('\n'.join(sorted(tags_list)), encoding='utf-8')
+        # Save tags as comma-delimited list without extra spaces around commas
+        content = ", ".join([tag.strip() for tag in sorted(tags_list)])
 
-        logging.debug(f"Saved {len(tags_list)} tags to {text_file_path}")
+        # Use direct file write with open() to ensure the file is completely regenerated
+        with open(str(text_file_path), 'w', encoding='utf-8') as f:
+            f.write(content)
 
+        logging.info(f"Successfully saved {len(tags_list)} tags to {text_file_path} as comma-delimited list")
         return True
     except Exception as e:
         error_msg = f"Error saving tags to {text_file_path}: {e}"

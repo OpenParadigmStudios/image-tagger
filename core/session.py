@@ -8,7 +8,8 @@ import threading
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Union
+from datetime import datetime
 
 class SessionError(Exception):
     """Raised when session operations fail."""
@@ -39,18 +40,19 @@ class SessionState:
 class SessionManager:
     """Manage session state with safe operations."""
 
-    def __init__(self, session_file: Path):
+    def __init__(self, session_file: Union[str, Path]):
         """
-        Initialize the SessionManager.
+        Initialize the session manager.
 
         Args:
             session_file: Path to the session file
         """
-        self.session_file = session_file
-        self._lock = threading.Lock()
+        self.session_file = Path(session_file)
         self.state = self._load_session()
+        self._lock = threading.RLock()
         self._auto_save_interval = 60  # Default auto-save interval in seconds
         self._last_save_time = time.time()
+        self._changes_pending = False
 
     def _load_session(self) -> SessionState:
         """
@@ -118,11 +120,17 @@ class SessionManager:
                 temp_file.replace(self.session_file)
 
                 self._last_save_time = current_time
+                self._changes_pending = False
                 logging.debug(f"Session state saved to {self.session_file}")
                 return True
             except Exception as e:
                 logging.error(f"Failed to save session state: {e}")
                 raise SessionError(f"Failed to save session state: {e}")
+
+    def _create_backup(self, session_file: Path) -> Path:
+        # Implementation of _create_backup method
+        # This method should return the path to the created backup file
+        pass
 
     def reset_auto_save_timer(self) -> None:
         """Reset the auto-save timer."""

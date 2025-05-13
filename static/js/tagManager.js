@@ -17,29 +17,24 @@ class TagManager {
         // State
         this.tags = [];
         this.selectedTags = [];
-        this.recentlyUsedTags = [];
         this.currentImageId = null;
-        this.filterText = '';
+        this.pendingTagUpdates = false;
 
         // Elements
         this.elements = {
-            tagFilter: document.getElementById('tag-filter'),
             newTagInput: document.getElementById('new-tag'),
             addTagButton: document.getElementById('add-tag-button'),
-            recentTagsContainer: document.getElementById('recent-tags'),
             allTagsContainer: document.getElementById('all-tags'),
             saveTagsButton: document.getElementById('save-tags-button')
         };
 
         // Bind methods
-        this.filterTags = this.filterTags.bind(this);
         this.addNewTag = this.addNewTag.bind(this);
         this.toggleTagSelection = this.toggleTagSelection.bind(this);
         this.saveTags = this.saveTags.bind(this);
         this.loadTags = this.loadTags.bind(this);
 
         // Event listeners
-        this.elements.tagFilter.addEventListener('input', this.filterTags);
         this.elements.addTagButton.addEventListener('click', this.addNewTag);
         this.elements.newTagInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') this.addNewTag();
@@ -52,6 +47,18 @@ class TagManager {
         // WebSocket event listeners
         document.addEventListener('ws:session_state', (e) => this.handleSessionState(e.detail));
         document.addEventListener('ws:tag_update', (e) => this.handleTagUpdate(e.detail));
+        document.addEventListener('ws:tags_update', (e) => this.handleTagsUpdate(e.detail));
+        document.addEventListener('ws:tags_updated', (e) => this.handleTagsUpdate(e.detail));
+        document.addEventListener('ws:image_data', (e) => this.handleImageData(e.detail));
+        document.addEventListener('ws:tags_saved', (e) => this.handleTagsSaved(e.detail));
+        document.addEventListener('ws:connect', () => this.requestTags());
+    }
+
+    /**
+     * Request all tags from the server on connection
+     */
+    requestTags() {
+        websocket.sendMessage('get_tags');
     }
 
     /**
@@ -70,10 +77,62 @@ class TagManager {
      * @param {Object} data - Tag update data
      */
     handleTagUpdate(data) {
-        // Update tags list
+        console.log('Received tag update:', data);
+
+        // Update tags list from all_tags field if present
+        if (data.all_tags) {
+            this.tags = data.all_tags;
+            console.log('Updated master tag list, now has', this.tags.length, 'tags');
+        }
+
+        // If this update is for the current image, update selected tags
+        if (data.image_id === this.currentImageId) {
+            console.log('Updating selected tags for current image:', data.tags);
+            this.selectedTags = data.tags || [];
+            this.pendingTagUpdates = false;
+        }
+
+        // Always render the tag list to show updates
+        this.renderTagList();
+        this.updateSaveButton(this.currentImageId === data.image_id);
+    }
+
+    /**
+     * Handle tags update from WebSocket
+     * @param {Object} data - Tags update data
+     */
+    handleTagsUpdate(data) {
+        console.log('Received tags update:', data);
         if (data.tags) {
             this.tags = data.tags;
+            console.log('Updated all tags, now has', this.tags.length, 'tags');
             this.renderTagList();
+        }
+    }
+
+    /**
+     * Handle image data from WebSocket
+     * @param {Object} data - Image data
+     */
+    handleImageData(data) {
+        if (data.id) {
+            this.currentImageId = data.id;
+            this.selectedTags = data.tags || [];
+            this.renderTagList();
+            this.updateSaveButton();
+        }
+    }
+
+    /**
+     * Handle tags saved event
+     * @param {Object} data - Tags saved data
+     */
+    handleTagsSaved(data) {
+        if (data.image_id === this.currentImageId) {
+            this.selectedTags = data.tags || [];
+            this.pendingTagUpdates = false;
+            this.renderTagList();
+            this.updateSaveButton(true);
         }
     }
 
@@ -102,14 +161,6 @@ class TagManager {
     }
 
     /**
-     * Filter tags based on input
-     */
-    filterTags() {
-        this.filterText = this.elements.tagFilter.value.trim().toLowerCase();
-        this.renderTagList();
-    }
-
-    /**
      * Add a new tag
      */
     async addNewTag() {
@@ -124,12 +175,21 @@ class TagManager {
             // Clear input
             this.elements.newTagInput.value = '';
 
+            // Add to our local list of tags if not already present
+            if (!this.tags.includes(newTag)) {
+                this.tags.push(newTag);
+                this.tags.sort();
+            }
+
             // Select this tag for the current image if one is loaded
             if (this.currentImageId !== null && !this.selectedTags.includes(newTag)) {
                 this.selectedTags.push(newTag);
-                this.addToRecentlyUsed(newTag);
+                this.pendingTagUpdates = true;
                 this.updateSaveButton();
             }
+
+            // Update UI
+            this.renderTagList();
         } catch (error) {
             console.error(`Error adding tag "${newTag}":`, error);
         }
@@ -151,54 +211,46 @@ class TagManager {
             // Add tag
             this.selectedTags.push(tag);
             element.classList.add('selected');
-            this.addToRecentlyUsed(tag);
         }
 
+        this.pendingTagUpdates = true;
         this.updateSaveButton();
-    }
-
-    /**
-     * Add a tag to recently used
-     * @param {string} tag - Tag to add to recently used
-     */
-    addToRecentlyUsed(tag) {
-        // Remove if already exists
-        const index = this.recentlyUsedTags.indexOf(tag);
-        if (index >= 0) {
-            this.recentlyUsedTags.splice(index, 1);
-        }
-
-        // Add to beginning
-        this.recentlyUsedTags.unshift(tag);
-
-        // Keep only 10 most recent
-        if (this.recentlyUsedTags.length > 10) {
-            this.recentlyUsedTags.pop();
-        }
-
-        this.renderRecentTags();
     }
 
     /**
      * Save tags for the current image
      */
     async saveTags() {
-        if (!this.currentImageId) return;
+        if (!this.currentImageId) {
+            console.warn('No image selected, cannot save tags');
+            return;
+        }
+
+        if (!this.pendingTagUpdates) {
+            console.log('No pending tag updates to save');
+            return;
+        }
 
         try {
-            // Send to server via WebSocket for real-time update
+            console.log(`Saving tags for image ${this.currentImageId}:`, this.selectedTags);
+
+            // First use HTTP API to ensure persistence
+            const apiResponse = await api.updateImageTags(this.currentImageId, this.selectedTags);
+            console.log('API response for updateImageTags:', apiResponse);
+
+            // Then send via WebSocket for real-time update
             websocket.sendMessage('update_tags', {
                 image_id: this.currentImageId,
                 tags: this.selectedTags
             });
 
-            // Also use HTTP API as fallback
-            await api.updateImageTags(this.currentImageId, this.selectedTags);
-
             // Disable save button
+            this.pendingTagUpdates = false;
             this.updateSaveButton(true);
         } catch (error) {
             console.error('Error saving tags:', error);
+            // Try to revert UI to pending state
+            this.updateSaveButton(false);
         }
     }
 
@@ -212,10 +264,10 @@ class TagManager {
             this.elements.saveTagsButton.textContent = 'Saved';
             setTimeout(() => {
                 this.elements.saveTagsButton.textContent = 'Save Tags';
-                this.elements.saveTagsButton.disabled = !this.currentImageId;
+                this.elements.saveTagsButton.disabled = !this.currentImageId || !this.pendingTagUpdates;
             }, 1500);
         } else {
-            this.elements.saveTagsButton.disabled = !this.currentImageId;
+            this.elements.saveTagsButton.disabled = !this.currentImageId || !this.pendingTagUpdates;
             this.elements.saveTagsButton.textContent = 'Save Tags';
         }
     }
@@ -230,13 +282,8 @@ class TagManager {
         // Sort alphabetically
         const sortedTags = [...this.tags].sort();
 
-        // Filter if needed
-        const filteredTags = this.filterText
-            ? sortedTags.filter(tag => tag.toLowerCase().includes(this.filterText))
-            : sortedTags;
-
         // Create tag elements
-        filteredTags.forEach(tag => {
+        sortedTags.forEach(tag => {
             const tagElement = document.createElement('div');
             tagElement.className = 'tag';
             if (this.selectedTags.includes(tag)) {
@@ -246,29 +293,6 @@ class TagManager {
             tagElement.addEventListener('click', () => this.toggleTagSelection(tag, tagElement));
 
             allTagsContainer.appendChild(tagElement);
-        });
-
-        // Update recent tags
-        this.renderRecentTags();
-    }
-
-    /**
-     * Render recently used tags
-     */
-    renderRecentTags() {
-        const recentContainer = this.elements.recentTagsContainer;
-        recentContainer.innerHTML = '';
-
-        this.recentlyUsedTags.forEach(tag => {
-            const tagElement = document.createElement('div');
-            tagElement.className = 'tag';
-            if (this.selectedTags.includes(tag)) {
-                tagElement.classList.add('selected');
-            }
-            tagElement.textContent = tag;
-            tagElement.addEventListener('click', () => this.toggleTagSelection(tag, tagElement));
-
-            recentContainer.appendChild(tagElement);
         });
     }
 }

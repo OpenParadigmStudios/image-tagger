@@ -14,6 +14,7 @@ from pydantic import ValidationError
 from fastapi.concurrency import run_in_threadpool
 
 from models.api import ImageTags, WebSocketMessage
+from core.tagging import save_image_tags
 
 # Create router
 router = APIRouter(
@@ -254,7 +255,9 @@ async def handle_websocket_message(websocket: WebSocket, message_text: str, requ
             tags = []
 
             if tags_file_path.exists():
-                tags = [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+                from server.utils import validate_and_load_tags
+                tags = await run_in_threadpool(validate_and_load_tags, tags_file_path)
+                logging.info(f"Sending {len(tags)} tags to client")
 
             await connection_manager.send_message(websocket, {
                 "type": "tags_update",
@@ -288,7 +291,7 @@ async def handle_websocket_message(websocket: WebSocket, message_text: str, requ
                 if processed:
                     relative_path = state["session_state"].processed_images.get(str(img_path))
                     if relative_path:
-                        processed_path = state["config"].input_directory / relative_path
+                        processed_path = Path(relative_path)  # This is already the full path
                         txt_path = processed_path.with_suffix(".txt")
                         if txt_path.exists():
                             tags = validate_and_load_tags(txt_path, create_if_missing=False)
@@ -347,6 +350,83 @@ async def handle_websocket_message(websocket: WebSocket, message_text: str, requ
                     "message": "Session saved successfully"
                 }
             })
+
+        elif message.type == "update_tags":
+            # Update tags for an image
+            try:
+                image_id = message_data.get("data", {}).get("image_id")
+                tags = message_data.get("data", {}).get("tags", [])
+
+                if not image_id:
+                    raise ValueError("No image_id provided")
+
+                # Get image info
+                from server.utils import get_image_by_id, validate_and_load_tags
+                img_path, img_index = get_image_by_id(image_id, state)
+
+                # Get processed path
+                processed = str(img_path) in state["session_state"].processed_images
+
+                if not processed:
+                    raise ValueError(f"Image {image_id} has not been processed yet")
+
+                # Get tag file path
+                relative_path = state["session_state"].processed_images.get(str(img_path))
+                if not relative_path:
+                    raise ValueError(f"Cannot find processed path for image {image_id}")
+
+                processed_path = Path(relative_path)  # This is already the full path
+                txt_path = processed_path.with_suffix(".txt")
+
+                logging.debug(f"Updating tags for image {image_id} at path {txt_path}")
+
+                # Save tags to file
+                await run_in_threadpool(save_image_tags, txt_path, tags)
+
+                # Add new tags to master tags list
+                tags_file_path = state["tags_file_path"]
+                current_tags = await run_in_threadpool(validate_and_load_tags, tags_file_path)
+
+                # Check for new tags to add to master list
+                new_tags_added = False
+                for tag in tags:
+                    if tag not in current_tags:
+                        current_tags.append(tag)
+                        new_tags_added = True
+
+                # Save updated master tags list if needed
+                if new_tags_added:
+                    # Use direct write instead of nested coroutine
+                    def direct_write():
+                        with tags_file_path.open('w', encoding='utf-8') as f:
+                            f.write(', '.join(sorted(current_tags)))
+
+                    await run_in_threadpool(direct_write)
+
+                # Broadcast updates to all clients
+                await connection_manager.broadcast_json({
+                    "type": "tag_update",
+                    "data": {
+                        "image_id": image_id,
+                        "tags": tags,
+                        "all_tags": current_tags
+                    }
+                })
+
+                await connection_manager.send_message(websocket, {
+                    "type": "tags_saved",
+                    "data": {
+                        "image_id": image_id,
+                        "tags": tags
+                    }
+                })
+
+            except Exception as e:
+                logging.error(f"Error updating tags: {e}")
+                await connection_manager.send_message(websocket, {
+                    "type": "error",
+                    "data": {"message": f"Error updating tags: {str(e)}"}
+                })
 
         else:
             # Unknown message type - log it

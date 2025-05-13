@@ -129,7 +129,7 @@ class ApiClient {
                     'Content-Type': 'application/json',
                 },
                 body: JSON.stringify({
-                    name: tagName
+                    tags: [tagName]
                 }),
             });
             if (!response.ok) {

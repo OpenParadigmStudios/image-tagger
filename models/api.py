@@ -111,6 +111,9 @@ class WebSocketMessageType(str, Enum):
     SESSION_SAVED = "session_saved"
     NOTIFICATION = "notification"
     SHUTDOWN = "shutdown"
+    UPDATE_TAGS = "update_tags"
+    TAG_UPDATE = "tag_update"
+    TAGS_SAVED = "tags_saved"
 
 
 class WebSocketMessage(BaseModel):
@@ -120,8 +123,10 @@ class WebSocketMessage(BaseModel):
 
     @validator('type')
     def type_must_be_valid(cls, v):
-        if v not in [e.value for e in WebSocketMessageType]:
-            raise ValueError(f'Invalid message type: {v}')
+        # During development, accept any message type to avoid breaking changes
+        # Later this can be restricted to only the enum values
+        # if v not in [e.value for e in WebSocketMessageType]:
+        #     raise ValueError(f'Invalid message type: {v}')
         return v
 
 

@@ -36,19 +36,13 @@
             <section class="panel tag-panel">
                 <h2>Tags</h2>
                 <div class="tag-controls">
-                    <input type="text" id="tag-filter" placeholder="Filter tags...">
                     <input type="text" id="new-tag" placeholder="Add new tag...">
                     <button id="add-tag-button">Add Tag</button>
+                    <button id="save-tags-button" disabled>Save Tags</button>
                 </div>
                 <div class="tags-container">
-                    <h3>Recently Used</h3>
-                    <div id="recent-tags" class="tag-list"></div>
-
                     <h3>All Tags</h3>
                     <div id="all-tags" class="tag-list"></div>
-                </div>
-                <div class="tag-actions">
-                    <button id="save-tags-button" disabled>Save Tags</button>
                 </div>
             </section>
 
@@ -56,8 +50,7 @@
             <section class="panel session-panel">
                 <h2>Session</h2>
                 <div class="session-info">
-                    <p>Total Images: <span id="total-images">0</span></p>
-                    <p>Processed: <span id="processed-images">0</span></p>
+                    <p>Total: <span id="total-images">0</span> | Processed: <span id="processed-images">0</span></p>
                     <div class="progress-bar-container">
                         <div id="progress-bar" class="progress-bar"></div>
                     </div>
