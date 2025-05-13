@@ -184,6 +184,181 @@ def setup_tags_file(tags_file_path: Path) -> List[str]:
         return []
 
 
+def normalize_tag(tag: str) -> str:
+    """
+    Normalize a tag to ensure consistent formatting.
+
+    Args:
+        tag: Raw tag string
+
+    Returns:
+        str: Normalized tag string
+    """
+    # Strip whitespace and convert to lowercase
+    normalized = tag.strip()
+
+    # Remove any invalid characters - keep only alphanumeric, underscore, and hyphen
+    # This can be customized based on specific tag format requirements
+
+    # Return non-empty normalized tag
+    return normalized if normalized else ""
+
+
+def load_tags(tags_file_path: Path) -> List[str]:
+    """
+    Load the existing tags from the tags file.
+
+    Args:
+        tags_file_path: Path to the tags file
+
+    Returns:
+        List[str]: List of existing tags
+    """
+    if not tags_file_path.exists():
+        return []
+
+    try:
+        return [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+    except Exception as e:
+        logging.error(f"Error loading tags from {tags_file_path}: {e}")
+        return []
+
+
+def save_tags(tags_file_path: Path, tags_list: List[str]) -> bool:
+    """
+    Save the current tags list to the tags file.
+
+    Args:
+        tags_file_path: Path to the tags file
+        tags_list: List of tags to save
+
+    Returns:
+        bool: True if successful
+    """
+    try:
+        # Sort tags alphabetically for consistency
+        sorted_tags = sorted(set(tags_list))
+
+        # Create backup before writing
+        create_backup(tags_file_path)
+
+        # Write tags to file
+        tags_file_path.write_text('\n'.join(sorted_tags), encoding='utf-8')
+        logging.info(f"Saved {len(sorted_tags)} tags to {tags_file_path}")
+        return True
+    except Exception as e:
+        logging.error(f"Error saving tags to {tags_file_path}: {e}")
+        return False
+
+
+def add_tag(tags_list: List[str], new_tag: str) -> List[str]:
+    """
+    Add a new tag to the tags list if it doesn't exist.
+
+    Args:
+        tags_list: Current list of tags
+        new_tag: New tag to add
+
+    Returns:
+        List[str]: Updated list of tags
+    """
+    # Normalize the tag
+    normalized_tag = normalize_tag(new_tag)
+
+    if not normalized_tag:
+        return tags_list
+
+    # Check if tag already exists (case-insensitive)
+    if normalized_tag not in {tag.lower() for tag in tags_list}:
+        tags_list.append(normalized_tag)
+
+    return tags_list
+
+
+def remove_tag(tags_list: List[str], tag_to_remove: str) -> List[str]:
+    """
+    Remove a tag from the tags list.
+
+    Args:
+        tags_list: Current list of tags
+        tag_to_remove: Tag to remove
+
+    Returns:
+        List[str]: Updated list of tags
+    """
+    # First try exact match
+    if tag_to_remove in tags_list:
+        tags_list.remove(tag_to_remove)
+        return tags_list
+
+    # If not found, try case-insensitive
+    tag_lower = tag_to_remove.lower()
+    for tag in list(tags_list):  # Create a copy to avoid modification during iteration
+        if tag.lower() == tag_lower:
+            tags_list.remove(tag)
+
+    return tags_list
+
+
+def get_image_tags(text_file_path: Path) -> List[str]:
+    """
+    Get the tags associated with a specific image.
+
+    Args:
+        text_file_path: Path to the text file for the image
+
+    Returns:
+        List[str]: List of tags for the image
+    """
+    if not text_file_path.exists():
+        return []
+
+    try:
+        content = text_file_path.read_text(encoding='utf-8').strip()
+
+        # Handle both comma-separated and newline-separated formats
+        if ',' in content:
+            tags = [tag.strip() for tag in content.split(',') if tag.strip()]
+        else:
+            tags = [line.strip() for line in content.splitlines() if line.strip()]
+
+        return tags
+    except Exception as e:
+        logging.error(f"Error reading tags from {text_file_path}: {e}")
+        return []
+
+
+def save_image_tags(text_file_path: Path, tags_list: List[str]) -> bool:
+    """
+    Save tags for a specific image to its text file.
+
+    Args:
+        text_file_path: Path to the text file
+        tags_list: List of tags to save
+
+    Returns:
+        bool: True if successful
+    """
+    try:
+        # Create parent directory if it doesn't exist
+        text_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Create backup if file exists
+        if text_file_path.exists():
+            create_backup(text_file_path)
+
+        # Join tags as comma-separated list
+        content = ", ".join(tags_list)
+
+        # Write to file
+        text_file_path.write_text(content, encoding='utf-8')
+        logging.info(f"Saved {len(tags_list)} tags to {text_file_path}")
+        return True
+    except Exception as e:
+        logging.error(f"Error saving tags to {text_file_path}: {e}")
+        return False
+
+
 def get_processed_images(session_file_path: Path) -> SessionState:
     """
     Retrieve session state from session file.
