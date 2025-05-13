@@ -5,6 +5,8 @@
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field, validator
 import re
+from datetime import datetime
+from enum import Enum
 
 
 class Tag(BaseModel):
@@ -87,6 +89,22 @@ class SuccessResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
 
 
+class WebSocketMessageType(str, Enum):
+    """Types of WebSocket messages."""
+    CONNECT = "connect"
+    DISCONNECT = "disconnect"
+    HEARTBEAT = "heartbeat"
+    ERROR = "error"
+    IMAGE_UPDATE = "image_update"
+    TAGS_UPDATE = "tags_update"
+    TAGS_REPLACED = "tags_replaced"
+    SESSION_TAGS_UPDATED = "session_tags_updated"
+    STATS_UPDATE = "stats_update"
+    SESSION_UPDATE = "session_update"
+    NOTIFICATION = "notification"
+    SHUTDOWN = "shutdown"
+
+
 class WebSocketMessage(BaseModel):
     """WebSocket message model."""
     type: str
@@ -94,12 +112,7 @@ class WebSocketMessage(BaseModel):
 
     @validator('type')
     def type_must_be_valid(cls, v):
-        valid_types = {
-            'connect', 'disconnect', 'error', 'session_update',
-            'image_update', 'tag_update', 'tags_request', 'tag_add',
-            'tag_remove', 'image_tags_update', 'shutdown'
-        }
-        if v not in valid_types:
+        if v not in [e.value for e in WebSocketMessageType]:
             raise ValueError(f'Invalid message type: {v}')
         return v
 
@@ -146,3 +159,45 @@ class BatchTagUpdate(BaseModel):
                 if not re.match(r'^[a-zA-Z0-9_\-., ]+$', tag):
                     raise ValueError(f'Tag contains invalid characters: {tag}')
         return v
+
+
+class TagsList(BaseModel):
+    """List of tags."""
+    tags: List[str] = []
+
+
+class TagsUpdate(BaseModel):
+    """Tags update data."""
+    tags: List[str] = []
+
+
+class SessionStats(BaseModel):
+    """Statistics about the current session."""
+    total_images: int = 0
+    processed_images: int = 0
+    remaining_images: int = 0
+    percent_complete: float = 0.0
+
+    @validator("percent_complete", always=True)
+    def calculate_percent(cls, v, values):
+        """Calculate the percentage of completion."""
+        total = values.get("total_images", 0)
+        processed = values.get("processed_images", 0)
+        if total > 0:
+            return round((processed / total) * 100, 2)
+        return 0.0
+
+    @validator("remaining_images", always=True)
+    def calculate_remaining(cls, v, values):
+        """Calculate the number of remaining images."""
+        total = values.get("total_images", 0)
+        processed = values.get("processed_images", 0)
+        return max(0, total - processed)
+
+
+class SessionInfo(BaseModel):
+    """Information about the current session."""
+    current_position: Optional[str] = None
+    last_updated: Optional[str] = None
+    stats: SessionStats = Field(default_factory=SessionStats)
+    version: str = "1.0"

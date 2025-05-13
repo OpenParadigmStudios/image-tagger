@@ -11,6 +11,7 @@ from typing import Dict, List, Set, Optional, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
 from pydantic import ValidationError
+from fastapi.concurrency import run_in_threadpool
 
 from models.api import ImageTags, WebSocketMessage
 
@@ -109,7 +110,7 @@ class ConnectionManager:
         Broadcast a message to all connected clients.
 
         Args:
-            message: The message to broadcast
+            message: The message to broadcast (JSON string)
         """
         try:
             # Parse the message to validate it
@@ -138,6 +139,27 @@ class ConnectionManager:
             logging.error(f"Invalid JSON in broadcast message: {e}")
         except Exception as e:
             logging.error(f"Error during broadcast: {e}")
+
+    async def broadcast_json(self, message: Dict[str, Any]) -> None:
+        """
+        Broadcast a message to all connected clients directly from a Python dict.
+
+        Args:
+            message: Python dictionary containing the message
+        """
+        try:
+            # Validate message format
+            message_obj = WebSocketMessage(type=message.get("type"), data=message.get("data", {}))
+
+            # Convert to JSON string
+            message_json = json.dumps(message_obj.dict())
+
+            # Use existing broadcast method
+            await self.broadcast(message_json)
+        except ValidationError as e:
+            logging.error(f"Invalid broadcast_json message format: {e}")
+        except Exception as e:
+            logging.error(f"Error during broadcast_json: {e}")
 
     async def update_heartbeat(self, websocket: WebSocket) -> None:
         """
@@ -200,169 +222,89 @@ async def handle_websocket_message(websocket: WebSocket, message_text: str, requ
     Args:
         websocket: The WebSocket connection
         message_text: The message text
-        request: The HTTP request
+        request: The FastAPI request object
     """
+    state = request.state.app_state
+    connection_manager = state["connection_manager"]
+
     try:
-        # Parse message JSON
-        message = json.loads(message_text)
+        # Parse the message
+        message_data = json.loads(message_text)
+        message = WebSocketMessage(**message_data)
 
-        # Validate message format
-        message_obj = WebSocketMessage(type=message.get("type"), data=message.get("data", {}))
+        # Update heartbeat timestamp
+        await connection_manager.update_heartbeat(websocket)
 
-        # Handle different message types
-        message_type = message_obj.type
-        data = message_obj.data
-        app_state = request.state.app_state
+        # Handle message based on type
+        if message.type == "heartbeat":
+            # Simple heartbeat response
+            await connection_manager.send_message(websocket, {
+                "type": "heartbeat",
+                "data": {"timestamp": time.time()}
+            })
 
-        if message_type == "heartbeat":
-            # Update heartbeat timestamp
-            await connection_manager.update_heartbeat(websocket)
+        elif message.type == "tags_request":
+            # Request for tags list
+            async def get_tags():
+                tags_file_path = state["tags_file_path"]
+                if tags_file_path.exists():
+                    return [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+                return []
 
-            # Send heartbeat response
-            await connection_manager.send_message(
-                websocket,
-                {"type": "heartbeat", "data": {"timestamp": asyncio.get_event_loop().time()}}
-            )
+            tags = await run_in_threadpool(lambda: get_tags())
 
-        elif message_type == "session_request":
-            # Client is requesting session state
-            session_state = app_state["session_manager"].state
+            await connection_manager.send_message(websocket, {
+                "type": "tags_update",
+                "data": {"tags": tags}
+            })
 
-            # Send session state
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "session_update",
-                    "data": {
-                        "status": "active",
-                        "total_images": session_state.stats.get("total_images", 0),
-                        "processed_images": session_state.stats.get("processed_images", 0),
-                        "current_position": session_state.current_position,
-                        "last_updated": session_state.last_updated
-                    }
-                }
-            )
+        elif message.type == "session_request":
+            # Request for session info
+            session_manager = state["session_manager"]
 
-        elif message_type == "tags_request":
-            # Client is requesting all tags
-            tags_file = app_state["paths"]["tags_file"]
-            from core.tagging import load_tags
-            all_tags = load_tags(tags_file)
+            session_info = {
+                "current_position": session_manager.state.current_position,
+                "last_updated": session_manager.state.last_updated,
+                "stats": {
+                    "total_images": session_manager.state.stats.get("total_images", 0),
+                    "processed_images": session_manager.state.stats.get("processed_images", 0)
+                },
+                "version": session_manager.state.version
+            }
 
-            # Send all tags
-            await connection_manager.send_message(
-                websocket,
-                {"type": "tag_update", "data": {"tags": all_tags}}
-            )
-
-        elif message_type == "tag_add":
-            # Client is adding a tag
-            if "tag" not in data or not data["tag"]:
-                raise ValueError("Tag is required")
-
-            new_tag = data["tag"]
-
-            # Add tag to master list
-            tags_file = app_state["paths"]["tags_file"]
-            from core.tagging import load_tags, save_tags, add_tag
-            all_tags = load_tags(tags_file)
-            all_tags = add_tag(all_tags, new_tag)
-            save_tags(tags_file, all_tags)
-
-            # Add tag to session state
-            app_state["session_manager"].add_tag(new_tag)
-            app_state["session_manager"].save()
-
-            # Broadcast tag update to all clients
-            await connection_manager.broadcast(
-                json.dumps({"type": "tag_update", "data": {"tags": all_tags}})
-            )
-
-        elif message_type == "tag_remove":
-            # Client is removing a tag
-            if "tag" not in data or not data["tag"]:
-                raise ValueError("Tag is required")
-
-            tag_to_remove = data["tag"]
-
-            # Remove tag from master list
-            tags_file = app_state["paths"]["tags_file"]
-            from core.tagging import load_tags, save_tags, remove_tag
-            all_tags = load_tags(tags_file)
-            all_tags = remove_tag(all_tags, tag_to_remove)
-            save_tags(tags_file, all_tags)
-
-            # Remove tag from session state
-            app_state["session_manager"].remove_tag(tag_to_remove)
-            app_state["session_manager"].save()
-
-            # Broadcast tag update to all clients
-            await connection_manager.broadcast(
-                json.dumps({"type": "tag_update", "data": {"tags": all_tags}})
-            )
-
-        elif message_type == "image_tags_update":
-            # Client is updating tags for an image
-            if "image_id" not in data or not data["image_id"]:
-                raise ValueError("Image ID is required")
-            if "tags" not in data:
-                raise ValueError("Tags array is required")
-
-            image_id = data["image_id"]
-            tags = data["tags"]
-
-            # Find the image path
-            session_state = app_state["session_manager"].state
-            image_path = None
-            for orig_path, new_path in session_state.processed_images.items():
-                if Path(new_path).stem == image_id:
-                    image_path = new_path
-                    break
-
-            if not image_path:
-                raise ValueError(f"Image not found: {image_id}")
-
-            # Update image tags
-            from core.tagging import save_image_tags
-            text_file_path = Path(image_path).with_suffix('.txt')
-            save_image_tags(text_file_path, tags)
-
-            # Update session state
-            app_state["session_manager"].set_current_position(image_id)
-            app_state["session_manager"].save()
-
-            # Broadcast update to all clients
-            await connection_manager.broadcast(
-                json.dumps({
-                    "type": "image_tags_update",
-                    "data": {
-                        "image_id": image_id,
-                        "tags": tags
-                    }
-                })
-            )
+            await connection_manager.send_message(websocket, {
+                "type": "session_update",
+                "data": session_info
+            })
 
         else:
-            # Unknown message type
-            logging.warning(f"Unknown WebSocket message type: {message_type}")
+            # Unknown message type - log it
+            logging.warning(f"Unknown WebSocket message type: {message.type}")
 
-    except json.JSONDecodeError as e:
-        logging.error(f"Invalid JSON in WebSocket message: {e}")
+    except json.JSONDecodeError:
+        logging.error(f"Invalid JSON in WebSocket message: {message_text}")
+        await connection_manager.send_message(websocket, {
+            "type": "error",
+            "data": {"message": "Invalid JSON format"}
+        })
 
     except ValidationError as e:
-        logging.error(f"Invalid WebSocket message format: {e}")
+        logging.error(f"Validation error in WebSocket message: {e}")
+        await connection_manager.send_message(websocket, {
+            "type": "error",
+            "data": {"message": "Invalid message format"}
+        })
 
     except Exception as e:
         logging.error(f"Error handling WebSocket message: {e}")
-
-        # Send error to client
         try:
-            await connection_manager.send_message(
-                websocket,
-                {"type": "error", "data": {"message": str(e)}}
-            )
-        except:
-            pass
+            await connection_manager.send_message(websocket, {
+                "type": "error",
+                "data": {"message": "Server error processing message"}
+            })
+        except Exception:
+            # If sending the error message fails, just log it
+            logging.error("Failed to send error message to WebSocket client")
 
 
 @router.websocket("/")

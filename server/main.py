@@ -65,7 +65,7 @@ def setup_signal_handlers(app_state: Dict[str, Any]) -> None:
                     "type": "shutdown",
                     "data": {"message": "Server shutting down"}
                 }
-                app_state["connection_manager"].broadcast(json.dumps(shutdown_message))
+                app_state["connection_manager"].broadcast_json(shutdown_message)
                 logging.info("Shutdown notification sent to clients")
             except Exception as e:
                 logging.error(f"Error notifying clients during shutdown: {e}")
@@ -146,6 +146,11 @@ async def startup_event(app: FastAPI) -> None:
     paths = get_default_paths(config)
     app_state["paths"] = paths
 
+    # Standardize direct access to key paths
+    app_state["output_dir"] = paths["output_dir"]
+    app_state["session_file_path"] = paths["session_file"]
+    app_state["tags_file_path"] = paths["tags_file"]
+
     # Create shutdown event
     app_state["shutdown_event"] = asyncio.Event()
 
@@ -162,6 +167,9 @@ async def startup_event(app: FastAPI) -> None:
     session_manager = SessionManager(session_file)
     session_manager.set_auto_save_interval(config.auto_save)
     app_state["session_manager"] = session_manager
+
+    # Make session state directly accessible
+    app_state["session_state"] = session_manager.state
 
     # Get WebSocket connection manager from websocket router
     app_state["connection_manager"] = websocket.connection_manager

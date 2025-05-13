@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 
 from models.api import ImageInfo, ImageList, ImageTags
 from core.image_processing import validate_image_with_pillow
+from server.utils import get_image_by_id, ensure_image_processed, validate_and_load_tags
 
 # Create router
 router = APIRouter(
@@ -91,14 +92,8 @@ async def get_image_info(
     Returns:
         ImageInfo: Image information
     """
-    image_files = state["image_files"]
-
     try:
-        img_index = int(image_id)
-        if img_index < 0 or img_index >= len(image_files):
-            raise HTTPException(status_code=404, detail="Image not found")
-
-        img_path = image_files[img_index]
+        img_path, img_index = get_image_by_id(image_id, state)
         original_name = img_path.name
         processed = str(img_path) in state["session_state"].processed_images
 
@@ -116,8 +111,11 @@ async def get_image_info(
             path=str(img_path),
             processed=processed
         )
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid image ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting image info: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting image info: {str(e)}")
 
 
 @router.get("/{image_id}/file")
@@ -135,14 +133,8 @@ async def get_image_file(
     Returns:
         FileResponse: Image file
     """
-    image_files = state["image_files"]
-
     try:
-        img_index = int(image_id)
-        if img_index < 0 or img_index >= len(image_files):
-            raise HTTPException(status_code=404, detail="Image not found")
-
-        img_path = image_files[img_index]
+        img_path, _ = get_image_by_id(image_id, state)
 
         # Check if it's been processed (should serve from output dir)
         if str(img_path) in state["session_state"].processed_images:
@@ -157,8 +149,11 @@ async def get_image_file(
             return FileResponse(img_path)
         else:
             raise HTTPException(status_code=404, detail="Image file not found")
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid image ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error serving image file: {e}")
+        raise HTTPException(status_code=500, detail=f"Error serving image file: {str(e)}")
 
 
 @router.get("/{image_id}/tags", response_model=ImageTags)
@@ -176,14 +171,8 @@ async def get_image_tags(
     Returns:
         ImageTags: Image tags information
     """
-    image_files = state["image_files"]
-
     try:
-        img_index = int(image_id)
-        if img_index < 0 or img_index >= len(image_files):
-            raise HTTPException(status_code=404, detail="Image not found")
-
-        img_path = image_files[img_index]
+        img_path, _ = get_image_by_id(image_id, state)
 
         # Check if it's been processed
         if str(img_path) in state["session_state"].processed_images:
@@ -193,13 +182,16 @@ async def get_image_tags(
                 txt_path = processed_path.with_suffix(".txt")
 
                 if txt_path.exists():
-                    tags = [line.strip() for line in txt_path.read_text(encoding='utf-8').splitlines() if line.strip()]
+                    tags = validate_and_load_tags(txt_path, create_if_missing=False)
                     return ImageTags(image_id=image_id, tags=tags)
 
         # No tags yet
         return ImageTags(image_id=image_id, tags=[])
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid image ID")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.error(f"Error getting image tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting image tags: {str(e)}")
 
 
 @router.put("/{image_id}/tags", response_model=ImageTags)
@@ -213,56 +205,41 @@ async def update_image_tags(
 
     Args:
         image_id: Image ID
-        tags_data: Tags data
+        tags_data: Image tags data
         state: Application state
 
     Returns:
-        ImageTags: Updated image tags
+        ImageTags: Updated image tags information
     """
-    if image_id != tags_data.image_id:
-        raise HTTPException(status_code=400, detail="Image ID mismatch")
-
-    image_files = state["image_files"]
-
     try:
-        img_index = int(image_id)
-        if img_index < 0 or img_index >= len(image_files):
-            raise HTTPException(status_code=404, detail="Image not found")
-
-        img_path = image_files[img_index]
+        img_path, _ = get_image_by_id(image_id, state)
 
         # Process the image if not already processed
-        from core.filesystem import process_image
+        processed_path, txt_path = ensure_image_processed(img_path, state)
 
-        if str(img_path) not in state["session_state"].processed_images:
-            state["session_state"].processed_images, new_img_path, txt_file_path = process_image(
-                img_path,
-                state["output_dir"],
-                state["config"].prefix,
-                state["session_state"].processed_images
-            )
-        else:
-            relative_path = state["session_state"].processed_images.get(str(img_path))
-            new_img_path = state["config"].input_directory / relative_path
-            txt_file_path = new_img_path.with_suffix(".txt")
+        # Update tags in text file
+        with txt_path.open('w', encoding='utf-8') as f:
+            f.write('\n'.join(tags_data.tags))
 
-        # Write tags to text file
-        txt_file_path.write_text("\n".join(tags_data.tags), encoding='utf-8')
-
-        # Update master tags list with any new tags
+        # Update master tags list
         update_master_tags_list(tags_data.tags, state["tags_file_path"])
 
-        # Save session state
-        from core.filesystem import save_session_state
-        state["session_state"].current_position = image_id
-        save_session_state(state["session_file_path"], state["session_state"])
+        # Broadcast update to connected clients
+        if state["connection_manager"]:
+            state["connection_manager"].broadcast_json({
+                "type": "tags_updated",
+                "data": {
+                    "image_id": image_id,
+                    "tags": tags_data.tags
+                }
+            })
 
-        return tags_data
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid image ID")
+        return ImageTags(image_id=image_id, tags=tags_data.tags)
+    except HTTPException:
+        raise
     except Exception as e:
-        logging.error(f"Error updating tags: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error updating image tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating image tags: {str(e)}")
 
 
 def update_master_tags_list(new_tags: List[str], tags_file_path: Path) -> None:
@@ -274,19 +251,21 @@ def update_master_tags_list(new_tags: List[str], tags_file_path: Path) -> None:
         tags_file_path: Path to the tags file
     """
     try:
-        # Read existing tags
-        if tags_file_path.exists():
-            existing_tags = [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
-        else:
-            existing_tags = []
+        # Load existing tags
+        existing_tags = validate_and_load_tags(tags_file_path)
 
-        # Merge and deduplicate tags
-        all_tags = sorted(set(existing_tags + new_tags))
+        # Add new tags that don't exist yet
+        updated = False
+        for tag in new_tags:
+            if tag and tag not in existing_tags:
+                existing_tags.append(tag)
+                updated = True
 
-        # Write updated tags
-        tags_file_path.write_text("\n".join(all_tags), encoding='utf-8')
-
-        logging.info(f"Updated master tags list: {len(all_tags)} total tags")
+        # Only write if there were changes
+        if updated:
+            with tags_file_path.open('w', encoding='utf-8') as f:
+                f.write('\n'.join(existing_tags))
+            logging.debug(f"Updated master tags list with {len(new_tags)} tags")
     except Exception as e:
         logging.error(f"Error updating master tags list: {e}")
-        raise
+        # Don't raise - non-critical operation

@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
 # CivitAI Flux Dev LoRA Tagging Assistant
-# Tags handling router
+# Tags management router
 
 import logging
 from pathlib import Path
-from typing import List, Dict, Set
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
-from models.api import Tag, TagList, ImageTags, WebSocketMessage
-from core.tagging import (
-    load_tags,
-    save_tags,
-    add_tag,
-    remove_tag,
-    get_image_tags,
-    save_image_tags,
-    normalize_tag
-)
+from models.api import TagsList, TagsUpdate
+from server.utils import validate_and_load_tags
 
 # Create router
 router = APIRouter(
@@ -33,250 +26,225 @@ def get_app_state():
     return app.state.app_state
 
 
-@router.get("/", response_model=TagList)
-async def get_all_tags(state: Dict = Depends(get_app_state)):
+@router.get("/", response_model=TagsList)
+async def list_tags(
+    state: Dict = Depends(get_app_state),
+    search: Optional[str] = None
+):
     """
-    Get all tags from the master tags list.
+    List all tags in the master tag list.
 
     Args:
         state: Application state
+        search: Optional search term for filtering tags
 
     Returns:
-        TagList: List of all tags
+        TagsList: List of tags
     """
-    tags_file_path = state["tags_file_path"]
-
     try:
-        tags = load_tags(tags_file_path)
-        return TagList(tags=sorted(tags))
+        tags_file_path = state["tags_file_path"]
+        tags = await run_in_threadpool(validate_and_load_tags, tags_file_path)
+
+        # Filter tags if search is provided
+        if search:
+            search_lower = search.lower()
+            tags = [tag for tag in tags if search_lower in tag.lower()]
+
+        return TagsList(tags=tags)
     except Exception as e:
-        logging.error(f"Error reading tags file: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error listing tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error listing tags: {str(e)}")
 
 
-@router.post("/", response_model=TagList)
-async def add_new_tag(
-    tag_data: Tag,
+@router.post("/", response_model=TagsList)
+async def add_tags(
+    tags_update: TagsUpdate,
     state: Dict = Depends(get_app_state)
 ):
     """
-    Add a new tag to the master tags list.
+    Add new tags to the master tag list.
 
     Args:
-        tag_data: Tag to add
+        tags_update: Tags to add
         state: Application state
 
     Returns:
-        TagList: Updated list of all tags
+        TagsList: Updated list of tags
     """
-    if not tag_data.name or tag_data.name.isspace():
-        raise HTTPException(status_code=400, detail="Tag name cannot be empty")
-
-    tags_file_path = state["tags_file_path"]
-    connection_manager = state["connection_manager"]
-
     try:
+        tags_file_path = state["tags_file_path"]
+
         # Load existing tags
-        existing_tags = load_tags(tags_file_path)
+        existing_tags = await run_in_threadpool(validate_and_load_tags, tags_file_path)
 
-        # Add new tag if it doesn't exist
-        normalized_tag = normalize_tag(tag_data.name)
-        updated_tags = add_tag(existing_tags, normalized_tag)
+        # Add new tags
+        updated = False
+        for tag in tags_update.tags:
+            if tag and tag not in existing_tags:
+                existing_tags.append(tag)
+                updated = True
 
-        # Save tags if changed
-        if len(updated_tags) > len(existing_tags):
-            save_tags(tags_file_path, updated_tags)
+        # Save if there were changes
+        if updated:
+            async def write_tags():
+                with tags_file_path.open('w', encoding='utf-8') as f:
+                    f.write('\n'.join(existing_tags))
 
-            # Update session state
-            state["session_state"].tags = sorted(updated_tags)
+            await run_in_threadpool(write_tags)
 
-            # Broadcast tag update to connected clients
-            await connection_manager.broadcast({
-                "type": "tag_update",
-                "data": {"action": "add", "tag": normalized_tag, "tags": sorted(updated_tags)}
-            })
-
-            logging.info(f"Added new tag: {normalized_tag}")
-
-        return TagList(tags=sorted(updated_tags))
-    except Exception as e:
-        logging.error(f"Error adding new tag: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/{tag_name}", response_model=TagList)
-async def delete_tag(
-    tag_name: str,
-    state: Dict = Depends(get_app_state)
-):
-    """
-    Delete a tag from the master tags list.
-
-    Args:
-        tag_name: Tag to delete
-        state: Application state
-
-    Returns:
-        TagList: Updated list of all tags
-    """
-    tags_file_path = state["tags_file_path"]
-    connection_manager = state["connection_manager"]
-
-    try:
-        # Load existing tags
-        existing_tags = load_tags(tags_file_path)
-
-        # Get tag count before removal
-        before_count = len(existing_tags)
-
-        # Remove tag if it exists
-        updated_tags = remove_tag(existing_tags, tag_name)
-
-        # Save tags if changed
-        if len(updated_tags) < before_count:
-            save_tags(tags_file_path, updated_tags)
-
-            # Update session state
-            state["session_state"].tags = sorted(updated_tags)
-
-            # Broadcast tag update to connected clients
-            await connection_manager.broadcast({
-                "type": "tag_update",
-                "data": {"action": "delete", "tag": tag_name, "tags": sorted(updated_tags)}
-            })
-
-            logging.info(f"Deleted tag: {tag_name}")
-
-        return TagList(tags=sorted(updated_tags))
-    except Exception as e:
-        logging.error(f"Error deleting tag: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/images/{image_id}", response_model=ImageTags)
-async def get_image_tags_endpoint(
-    image_id: str,
-    state: Dict = Depends(get_app_state)
-):
-    """
-    Get tags associated with a specific image.
-
-    Args:
-        image_id: Image ID
-        state: Application state
-
-    Returns:
-        ImageTags: Object containing image ID and its tags
-    """
-    try:
-        image_files = state["image_files"]
-        img_index = int(image_id)
-
-        if img_index < 0 or img_index >= len(image_files):
-            raise ValueError(f"Invalid image index: {img_index}")
-
-        img_path = image_files[img_index]
-
-        # Check if this image has been processed
-        processed = str(img_path) in state["session_state"].processed_images
-        tags = []
-
-        if processed:
-            relative_path = state["session_state"].processed_images.get(str(img_path))
-            if relative_path:
-                processed_path = state["output_dir"] / Path(relative_path).name
-                txt_path = processed_path.with_suffix(".txt")
-                tags = get_image_tags(txt_path)
-
-        return ImageTags(image_id=image_id, tags=tags)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid image ID: {image_id}")
-    except Exception as e:
-        logging.error(f"Error retrieving image tags: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.put("/images/{image_id}", response_model=ImageTags)
-async def update_image_tags(
-    image_id: str,
-    tag_data: TagList,
-    state: Dict = Depends(get_app_state)
-):
-    """
-    Update tags for a specific image.
-
-    Args:
-        image_id: Image ID
-        tag_data: New tags for the image
-        state: Application state
-
-    Returns:
-        ImageTags: Updated image tags object
-    """
-    try:
-        image_files = state["image_files"]
-        connection_manager = state["connection_manager"]
-        img_index = int(image_id)
-
-        if img_index < 0 or img_index >= len(image_files):
-            raise ValueError(f"Invalid image index: {img_index}")
-
-        img_path = image_files[img_index]
-        output_dir = state["output_dir"]
-
-        # Check if the image has been processed
-        processed = str(img_path) in state["session_state"].processed_images
-
-        if not processed:
-            raise HTTPException(status_code=400, detail=f"Image {image_id} has not been processed yet")
-
-        relative_path = state["session_state"].processed_images.get(str(img_path))
-        if not relative_path:
-            raise HTTPException(status_code=400, detail=f"Cannot find processed path for image {image_id}")
-
-        processed_path = output_dir / Path(relative_path).name
-        txt_path = processed_path.with_suffix(".txt")
-
-        # Normalize tags
-        normalized_tags = [normalize_tag(tag) for tag in tag_data.tags if normalize_tag(tag)]
-
-        # Save tags to image file
-        if save_image_tags(txt_path, normalized_tags):
-            # Update master tags list with any new tags
-            all_tags = load_tags(state["tags_file_path"])
-            updated = False
-
-            for tag in normalized_tags:
-                if tag not in all_tags:
-                    all_tags = add_tag(all_tags, tag)
-                    updated = True
-
-            if updated:
-                save_tags(state["tags_file_path"], all_tags)
-                state["session_state"].tags = sorted(all_tags)
-
-                # Broadcast master tag list update
-                await connection_manager.broadcast({
-                    "type": "master_tags_update",
-                    "data": {"tags": sorted(all_tags)}
+            # Broadcast update to clients
+            if state["connection_manager"]:
+                state["connection_manager"].broadcast_json({
+                    "type": "tags_updated",
+                    "data": {"tags": existing_tags}
                 })
 
-            # Broadcast image tags update
-            await connection_manager.broadcast({
-                "type": "image_tags_update",
-                "data": {"image_id": image_id, "tags": normalized_tags}
+        return TagsList(tags=existing_tags)
+    except Exception as e:
+        logging.error(f"Error adding tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error adding tags: {str(e)}")
+
+
+@router.delete("/", response_model=TagsList)
+async def delete_tags(
+    tags_update: TagsUpdate,
+    state: Dict = Depends(get_app_state)
+):
+    """
+    Delete tags from the master tag list.
+
+    Args:
+        tags_update: Tags to delete
+        state: Application state
+
+    Returns:
+        TagsList: Updated list of tags
+    """
+    try:
+        tags_file_path = state["tags_file_path"]
+
+        # Load existing tags
+        existing_tags = await run_in_threadpool(validate_and_load_tags, tags_file_path)
+
+        # Remove tags
+        updated = False
+        for tag in tags_update.tags:
+            if tag in existing_tags:
+                existing_tags.remove(tag)
+                updated = True
+
+        # Save if there were changes
+        if updated:
+            async def write_tags():
+                with tags_file_path.open('w', encoding='utf-8') as f:
+                    f.write('\n'.join(existing_tags))
+
+            await run_in_threadpool(write_tags)
+
+            # Broadcast update to clients
+            if state["connection_manager"]:
+                state["connection_manager"].broadcast_json({
+                    "type": "tags_updated",
+                    "data": {"tags": existing_tags}
+                })
+
+        return TagsList(tags=existing_tags)
+    except Exception as e:
+        logging.error(f"Error deleting tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error deleting tags: {str(e)}")
+
+
+@router.put("/", response_model=TagsList)
+async def replace_tags(
+    tags_update: TagsUpdate,
+    state: Dict = Depends(get_app_state)
+):
+    """
+    Replace the entire master tag list.
+
+    Args:
+        tags_update: New list of tags
+        state: Application state
+
+    Returns:
+        TagsList: Updated list of tags
+    """
+    try:
+        tags_file_path = state["tags_file_path"]
+
+        # Replace tags
+        async def write_tags():
+            with tags_file_path.open('w', encoding='utf-8') as f:
+                f.write('\n'.join(tags_update.tags))
+
+        await run_in_threadpool(write_tags)
+
+        # Broadcast update to clients
+        if state["connection_manager"]:
+            state["connection_manager"].broadcast_json({
+                "type": "tags_replaced",
+                "data": {"tags": tags_update.tags}
             })
 
-            logging.info(f"Updated tags for image {image_id}: {len(normalized_tags)} tags")
-
-            return ImageTags(image_id=image_id, tags=normalized_tags)
-        else:
-            raise HTTPException(status_code=500, detail=f"Failed to save tags for image {image_id}")
-
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid image ID: {image_id}")
-    except HTTPException:
-        raise
+        return TagsList(tags=tags_update.tags)
     except Exception as e:
-        logging.error(f"Error updating image tags: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logging.error(f"Error replacing tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error replacing tags: {str(e)}")
+
+
+@router.get("/session", response_model=TagsList)
+async def get_session_tags(
+    state: Dict = Depends(get_app_state)
+):
+    """
+    Get tags from the current session.
+
+    Args:
+        state: Application state
+
+    Returns:
+        TagsList: Session tags
+    """
+    try:
+        session_manager = state["session_manager"]
+        return TagsList(tags=session_manager.state.tags)
+    except Exception as e:
+        logging.error(f"Error getting session tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting session tags: {str(e)}")
+
+
+@router.post("/session", response_model=TagsList)
+async def update_session_tags(
+    tags_update: TagsUpdate,
+    state: Dict = Depends(get_app_state)
+):
+    """
+    Update tags in the current session.
+
+    Args:
+        tags_update: Tags to update
+        state: Application state
+
+    Returns:
+        TagsList: Updated session tags
+    """
+    try:
+        session_manager = state["session_manager"]
+
+        # Update tags
+        session_manager.update_tags(tags_update.tags)
+
+        # Save session
+        await run_in_threadpool(session_manager.save)
+
+        # Broadcast update
+        if state["connection_manager"]:
+            state["connection_manager"].broadcast_json({
+                "type": "session_tags_updated",
+                "data": {"tags": tags_update.tags}
+            })
+
+        return TagsList(tags=session_manager.state.tags)
+    except Exception as e:
+        logging.error(f"Error updating session tags: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating session tags: {str(e)}")
