@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CivitAI Flux Dev LoRA Tagging Assistant</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+
+<body>
+    <header>
+        <h1>CivitAI Flux Dev LoRA Tagging Assistant</h1>
+        <div id="connection-status" class="status-indicator">Connecting...</div>
+    </header>
+
+    <main class="container">
+        <div class="app-grid">
+            <!-- Image Preview Panel -->
+            <section class="panel image-preview-panel">
+                <h2>Image Preview</h2>
+                <div class="image-container">
+                    <img id="preview-image" src="/static/assets/placeholder.png" alt="Preview image">
+                </div>
+                <div class="image-info">
+                    <p id="image-name">No image selected</p>
+                    <p id="image-dimensions"></p>
+                </div>
+                <div class="image-controls">
+                    <button id="prev-button" disabled>Previous</button>
+                    <button id="next-button" disabled>Next</button>
+                </div>
+            </section>
+
+            <!-- Tag Management Panel -->
+            <section class="panel tag-panel">
+                <h2>Tags</h2>
+                <div class="tag-controls">
+                    <input type="text" id="tag-filter" placeholder="Filter tags...">
+                    <input type="text" id="new-tag" placeholder="Add new tag...">
+                    <button id="add-tag-button">Add Tag</button>
+                </div>
+                <div class="tags-container">
+                    <h3>Recently Used</h3>
+                    <div id="recent-tags" class="tag-list"></div>
+
+                    <h3>All Tags</h3>
+                    <div id="all-tags" class="tag-list"></div>
+                </div>
+                <div class="tag-actions">
+                    <button id="save-tags-button" disabled>Save Tags</button>
+                </div>
+            </section>
+
+            <!-- Session Control Panel -->
+            <section class="panel session-panel">
+                <h2>Session</h2>
+                <div class="session-info">
+                    <p>Total Images: <span id="total-images">0</span></p>
+                    <p>Processed: <span id="processed-images">0</span></p>
+                    <div class="progress-bar-container">
+                        <div id="progress-bar" class="progress-bar"></div>
+                    </div>
+                </div>
+                <div class="session-controls">
+                    <button id="save-session-button">Save Session</button>
+                    <button id="exit-button">Exit</button>
+                </div>
+                <div id="status-message" class="status-message"></div>
+            </section>
+        </div>
+    </main>
+
+    <footer>
+        <p>CivitAI Flux Dev LoRA Tagging Assistant</p>
+    </footer>
+
+    <!-- JavaScript -->
+    <script src="/static/js/app.js" type="module"></script>
+</body>
+
+</html>

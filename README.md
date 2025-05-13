@@ -1,10 +1,10 @@
 # CivitAI Flux Dev LoRA Tagging Assistant
 
-A Python application to assist in creating tag files for CivitAI Flux Dev LoRA model training.
+A Python application with a web interface to assist in creating tag files for CivitAI Flux Dev LoRA model training.
 
 ## Overview
 
-This tool helps you process a directory of images and create corresponding text files with tags for each image. It provides a visual interface for adding tags, maintains a collection of previously used tags, and supports interrupting and resuming the tagging process.
+This tool helps you process a directory of images and create corresponding text files with tags for each image. It provides a web-based interface for adding tags, maintains a collection of previously used tags, and supports interrupting and resuming the tagging process.
 
 ## Current Status
 
@@ -12,11 +12,19 @@ This project is being developed in steps. Current implementation:
 
 - ✅ Step 1: Command Line Argument Parsing
 - ✅ Step 2: File System Operations
+- ⬜ Step 3: Image Renaming and Copying
+- ⬜ Step 4: Server Implementation with FastAPI
+- ⬜ Step 5: Tag Management System with API
+- ⬜ Step 6: Web Client Interface
+- ⬜ Step 7: Integration and Workflow Completion
+- ⬜ Step 8: Testing with Sample Images
+- ⬜ Step 9: Refinement and Enhancements
 
 ## Requirements
 
 - Python 3.8 or higher
 - UV package manager (recommended)
+- Modern web browser (Chrome, Firefox, Safari)
 
 ## Installation
 
@@ -75,19 +83,22 @@ When opening the project in Cursor IDE, it will automatically use the configured
 
 ```bash
 # Basic usage with just input directory
-python3 civitai_tagger.py /path/to/images
+python3 main.py /path/to/images
 
 # Specifying custom output directory name
-python3 civitai_tagger.py /path/to/images -o custom_output
+python3 main.py /path/to/images -o custom_output
 
 # Resume previous session
-python3 civitai_tagger.py /path/to/images -r
+python3 main.py /path/to/images -r
+
+# Use a specific host and port
+python3 main.py /path/to/images --host 0.0.0.0 --port 8080
 
 # Combine multiple options
-python3 civitai_tagger.py /path/to/images -o custom_output -p lora_ -r -v
+python3 main.py /path/to/images -o custom_output -p lora_ -r -v
 
 # Set auto-save interval to 2 minutes
-python3 civitai_tagger.py /path/to/images -a 120
+python3 main.py /path/to/images -a 120
 ```
 
 ## Command Line Arguments
@@ -98,13 +109,32 @@ python3 civitai_tagger.py /path/to/images -a 120
 - `-p, --prefix`: Prefix for renamed image files (default: "img")
 - `-v, --verbose`: Enable verbose logging (default: False)
 - `-a, --auto-save`: Time interval in seconds for auto-saving session state (default: 60)
+- `--host`: Host IP address for the web server (default: "127.0.0.1")
+- `--port`: Port number for the web server (default: 8000)
+
+## How It Works
+
+1. When you start the application, it launches a web server and opens a browser window
+2. The web interface allows you to view images and add tags
+3. Tags are saved to corresponding text files for each image
+4. Your progress is automatically saved and can be resumed later
+5. The application generates output files in the specified output directory
+
+## Project Structure
+
+- `main.py`: Main entry point
+- `core/`: Core functionality modules
+- `server/`: Web server and API implementation
+- `models/`: Data models for API requests/responses
+- `static/`: Web client files (HTML, CSS, JavaScript)
+- `test/`: Test files
 
 ## Development
 
 ### Running Tests
 
 ```bash
-python3 test_civitai_tagger.py
+# To be implemented
 ```
 
 For more detailed development guidelines, see [plan/development.md](plan/development.md).
