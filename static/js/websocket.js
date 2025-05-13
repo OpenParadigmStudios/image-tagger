@@ -57,6 +57,10 @@ class WebSocketClient {
             this.socket.onopen = () => {
                 this.connected = true;
                 this.startPingInterval();
+
+                // Send initial heartbeat immediately
+                this.sendMessage('heartbeat');
+
                 this.dispatchEvent('connectionStatusChanged', { connected: true });
                 resolve(true);
             };

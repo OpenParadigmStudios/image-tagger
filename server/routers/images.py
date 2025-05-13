@@ -23,8 +23,8 @@ router = APIRouter(
 
 def get_app_state():
     """Dependency to get application state."""
-    from server.main import app
-    return app.state.app_state
+    from server.main import app_state
+    return app_state
 
 
 @router.get("/", response_model=ImageList)

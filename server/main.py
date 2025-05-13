@@ -17,9 +17,10 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse
+from fastapi import WebSocket
 
 # Import routers
-from server.routers import images, tags, websocket
+from server.routers import images, tags, websocket, status
 
 # Import core modules
 from core.config import AppConfig
@@ -28,6 +29,12 @@ from core.session import SessionManager, SessionState
 from core.image_processing import scan_image_files
 from core.tagging import setup_tags_file
 
+# Create global app instance and global state
+app = FastAPI(
+    title="CivitAI Flux Dev LoRA Tagging Assistant",
+    description="Web-based image tagging for CivitAI Flux Dev LoRA model training",
+    version="1.0.0"
+)
 
 # Global state to store application context
 app_state: Dict[str, Any] = {
@@ -40,13 +47,30 @@ app_state: Dict[str, Any] = {
 }
 
 
-def setup_signal_handlers(app_state: Dict[str, Any]) -> None:
+def setup_signal_handlers() -> None:
     """
     Set up signal handlers for graceful shutdown.
-
-    Args:
-        app_state: Global application state
     """
+    def sync_broadcast(message):
+        """Helper to send sync broadcast message."""
+        if "connection_manager" in app_state and app_state["connection_manager"]:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # The message will be sent by server shutdown handlers
+                    logging.info("Skipping broadcast during shutdown in running loop")
+                    return
+                else:
+                    # Create a new event loop if needed
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(
+                        app_state["connection_manager"].broadcast_json(message)
+                    )
+                    loop.close()
+            except Exception as e:
+                logging.error(f"Error in sync broadcast: {e}")
+
     def handle_shutdown(sig, frame):
         logging.info(f"Received signal {sig}, initiating graceful shutdown...")
 
@@ -65,7 +89,7 @@ def setup_signal_handlers(app_state: Dict[str, Any]) -> None:
                     "type": "shutdown",
                     "data": {"message": "Server shutting down"}
                 }
-                app_state["connection_manager"].broadcast_json(shutdown_message)
+                sync_broadcast(shutdown_message)
                 logging.info("Shutdown notification sent to clients")
             except Exception as e:
                 logging.error(f"Error notifying clients during shutdown: {e}")
@@ -84,32 +108,70 @@ def setup_signal_handlers(app_state: Dict[str, Any]) -> None:
     logging.info("Signal handlers registered for graceful shutdown")
 
 
-def init_app() -> FastAPI:
-    """
-    Initialize the FastAPI application.
+def setup_middleware():
+    """Set up middlewares for the FastAPI application."""
+    # Set up CORS with more specific settings
+    origins = [
+        f"http://{os.environ.get('HOST', '127.0.0.1')}:{os.environ.get('PORT', '8000')}",
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ]
 
-    Returns:
-        FastAPI: The initialized application
-    """
-    app = FastAPI(
-        title="CivitAI Flux Dev LoRA Tagging Assistant",
-        description="Web-based image tagging for CivitAI Flux Dev LoRA model training",
-        version="1.0.0"
-    )
-
-    # Set up CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins
+        allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["*"],  # Allow all methods
-        allow_headers=["*"],  # Allow all headers
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["*"],
     )
 
+    # Provide access to app_state throughout the application
+    @app.middleware("http")
+    async def add_app_state(request: Request, call_next):
+        request.state.app_state = app_state
+        response = await call_next(request)
+        return response
+
+
+def setup_routes():
+    """Set up routes and endpoints for the FastAPI application."""
     # Include routers
     app.include_router(images.router)
     app.include_router(tags.router)
-    app.include_router(websocket.router)
+    app.include_router(status.router)
+
+    # Direct WebSocket endpoint (not using the router)
+    @app.websocket("/ws")
+    async def websocket_endpoint(websocket: WebSocket):
+        from server.routers.websocket import handle_websocket_message
+
+        client_id = None
+
+        try:
+            # Accept connection immediately
+            await websocket.accept()
+
+            # Register with connection manager
+            await app_state["connection_manager"].connect(websocket, client_id)
+
+            # Send initial connection confirmation
+            await app_state["connection_manager"].send_message(
+                websocket,
+                {"type": "connect", "data": {"message": "Connected to server"}}
+            )
+
+            # Handle messages
+            while True:
+                message = await websocket.receive_text()
+                await handle_websocket_message(websocket, message, None)
+
+        except Exception as e:
+            logging.error(f"WebSocket error: {e}")
+
+        finally:
+            # Clean up connection
+            if websocket in app_state["connection_manager"].active_connections:
+                await app_state["connection_manager"].disconnect(websocket)
 
     # Serve static files
     static_dir = Path(__file__).parent.parent / "static"
@@ -123,22 +185,11 @@ def init_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Web UI not found")
         return FileResponse(index_path)
 
-    # Provide access to app_state throughout the application
-    @app.middleware("http")
-    async def add_app_state(request: Request, call_next):
-        request.state.app_state = app_state
-        response = await call_next(request)
-        return response
 
-    return app
-
-
-async def startup_event(app: FastAPI) -> None:
+@app.on_event("startup")
+async def startup_event():
     """
     Initialize application state on startup.
-
-    Args:
-        app: FastAPI application instance
     """
     config = app_state["config"]
 
@@ -187,12 +238,10 @@ async def startup_event(app: FastAPI) -> None:
     logging.info("Application state initialized")
 
 
-async def shutdown_event(app: FastAPI) -> None:
+@app.on_event("shutdown")
+async def shutdown_event():
     """
     Clean up resources during shutdown.
-
-    Args:
-        app: FastAPI application instance
     """
     # Save session state
     if app_state["session_manager"] is not None:
@@ -220,15 +269,14 @@ def start_server(config: AppConfig) -> None:
     # Store configuration in app_state
     app_state["config"] = config
 
-    # Create FastAPI application
-    app = init_app()
-
     # Setup signal handlers
-    setup_signal_handlers(app_state)
+    setup_signal_handlers()
 
-    # Add startup and shutdown event handlers
-    app.add_event_handler("startup", lambda: startup_event(app))
-    app.add_event_handler("shutdown", lambda: shutdown_event(app))
+    # Setup app middleware
+    setup_middleware()
+
+    # Setup routes and endpoints
+    setup_routes()
 
     # Open browser if not in test mode
     if not os.environ.get("TAGGER_TEST_MODE"):

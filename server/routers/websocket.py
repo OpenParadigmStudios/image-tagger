@@ -39,7 +39,7 @@ class ConnectionManager:
             websocket: The WebSocket connection
             client_id: Optional client identifier
         """
-        await websocket.accept()
+        # Do not try to accept the connection again - it should already be accepted
         async with self._lock:
             self.active_connections.append(websocket)
             self.client_info[websocket] = {
@@ -215,19 +215,24 @@ class ConnectionManager:
 connection_manager = ConnectionManager()
 
 
-async def handle_websocket_message(websocket: WebSocket, message_text: str, request: Request) -> None:
+async def handle_websocket_message(websocket: WebSocket, message_text: str, request: Optional[Request] = None) -> None:
     """
     Handle incoming WebSocket messages.
 
     Args:
         websocket: The WebSocket connection
         message_text: The message text
-        request: The FastAPI request object
+        request: The FastAPI request object (optional)
     """
-    state = request.state.app_state
-    connection_manager = state["connection_manager"]
+    from server.main import app_state
 
     try:
+        # Get app state
+        state = app_state
+
+        # Get connection manager
+        connection_manager = state["connection_manager"]
+
         # Parse the message
         message_data = json.loads(message_text)
         message = WebSocketMessage(**message_data)
@@ -236,27 +241,80 @@ async def handle_websocket_message(websocket: WebSocket, message_text: str, requ
         await connection_manager.update_heartbeat(websocket)
 
         # Handle message based on type
-        if message.type == "heartbeat":
-            # Simple heartbeat response
+        if message.type == "heartbeat" or message.type == "ping":
+            # Simple heartbeat/ping response
             await connection_manager.send_message(websocket, {
-                "type": "heartbeat",
+                "type": "heartbeat" if message.type == "heartbeat" else "pong",
                 "data": {"timestamp": time.time()}
             })
 
-        elif message.type == "tags_request":
+        elif message.type == "get_tags" or message.type == "tags_request":
             # Request for tags list
-            async def get_tags():
-                tags_file_path = state["tags_file_path"]
-                if tags_file_path.exists():
-                    return [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
-                return []
+            tags_file_path = state["tags_file_path"]
+            tags = []
 
-            tags = await run_in_threadpool(lambda: get_tags())
+            if tags_file_path.exists():
+                tags = [line.strip() for line in tags_file_path.read_text(encoding='utf-8').splitlines() if line.strip()]
 
             await connection_manager.send_message(websocket, {
                 "type": "tags_update",
                 "data": {"tags": tags}
             })
+
+        elif message.type == "get_image":
+            # Request for image data
+            try:
+                image_id = message_data.get("data", {}).get("image_id")
+                if not image_id:
+                    raise ValueError("No image_id provided")
+
+                # Get image info
+                from server.utils import get_image_by_id
+                img_path, img_index = get_image_by_id(image_id, state)
+
+                # Check if image has been processed
+                processed = str(img_path) in state["session_state"].processed_images
+
+                # Get new name if processed
+                new_name = None
+                if processed:
+                    relative_path = state["session_state"].processed_images.get(str(img_path))
+                    if relative_path:
+                        new_name = Path(relative_path).name
+
+                # Get image tags
+                from server.utils import validate_and_load_tags
+                tags = []
+                if processed:
+                    relative_path = state["session_state"].processed_images.get(str(img_path))
+                    if relative_path:
+                        processed_path = state["config"].input_directory / relative_path
+                        txt_path = processed_path.with_suffix(".txt")
+                        if txt_path.exists():
+                            tags = validate_and_load_tags(txt_path, create_if_missing=False)
+
+                # Build response
+                image_data = {
+                    "id": image_id,
+                    "original_name": img_path.name,
+                    "new_name": new_name,
+                    "path": str(img_path),
+                    "processed": processed,
+                    "tags": tags,
+                    "url": f"/api/images/{image_id}/file"
+                }
+
+                await connection_manager.send_message(websocket, {
+                    "type": "image_data",
+                    "data": image_data
+                })
+
+            except Exception as e:
+                logging.error(f"Error getting image: {e}")
+                await connection_manager.send_message(websocket, {
+                    "type": "error",
+                    "data": {"message": f"Error loading image: {str(e)}"}
+                })
 
         elif message.type == "session_request":
             # Request for session info
@@ -275,6 +333,19 @@ async def handle_websocket_message(websocket: WebSocket, message_text: str, requ
             await connection_manager.send_message(websocket, {
                 "type": "session_update",
                 "data": session_info
+            })
+
+        elif message.type == "save_session":
+            # Request to save the session
+            session_manager = state["session_manager"]
+            session_manager.save(force=True)
+
+            await connection_manager.send_message(websocket, {
+                "type": "session_saved",
+                "data": {
+                    "timestamp": time.time(),
+                    "message": "Session saved successfully"
+                }
             })
 
         else:
@@ -316,14 +387,21 @@ async def websocket_endpoint(websocket: WebSocket, request: Request):
         websocket: The WebSocket connection
         request: The HTTP request
     """
+    from server.main import app_state
     client_id = None
 
     try:
-        # Accept connection
-        await connection_manager.connect(websocket, client_id)
+        # Accept connection immediately without any validation
+        await websocket.accept()
+
+        # Get connection manager
+        conn_mgr = app_state["connection_manager"]
+
+        # Register connection with connection manager
+        await conn_mgr.connect(websocket, client_id)
 
         # Send initial connection confirmation
-        await connection_manager.send_message(
+        await conn_mgr.send_message(
             websocket,
             {"type": "connect", "data": {"message": "Connected to server"}}
         )
@@ -341,7 +419,8 @@ async def websocket_endpoint(websocket: WebSocket, request: Request):
 
     finally:
         # Clean up connection
-        await connection_manager.disconnect(websocket)
+        if app_state["connection_manager"]:
+            await app_state["connection_manager"].disconnect(websocket)
 
 
 @router.on_event("startup")
