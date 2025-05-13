@@ -60,7 +60,7 @@ This Python application assists in creating tag files for CivitAI Flux Dev LoRA 
 - **State Management**: json for human-readable session persistence
 - **Validation**: Pydantic models for robust data structures
 - **Frontend**: HTML, CSS, JavaScript with component-based architecture
-- **Testing**: unittest framework for automated testing
+- **Testing**: unittest and pytest frameworks for automated testing
 
 ### Data Flow
 1. User starts the application with a directory path
@@ -127,10 +127,11 @@ civitai_tagger/
 │   └── tagging.py           # Tag management functions
 ├── server/                  # Server implementation
 │   ├── main.py              # FastAPI server setup
-│   ├── state.py             # Application state management
+│   ├── utils.py             # Utility functions for the server
 │   └── routers/             # API route handlers
 │       ├── images.py        # Image processing endpoints
 │       ├── tags.py          # Tag management endpoints
+│       ├── status.py        # Server status endpoints
 │       └── websocket.py     # WebSocket implementation
 ├── models/                  # Data models
 │   ├── config.py            # Configuration data models
@@ -153,6 +154,11 @@ civitai_tagger/
 │   ├── test_performance.py  # Performance tests
 │   ├── test_edge_cases.py   # Edge case tests
 │   ├── browser_compatibility.py # Browser compatibility tests
+│   ├── test_filesystem.py   # Filesystem operations tests
+│   ├── test_image_processing.py # Image processing tests
+│   ├── test_session.py      # Session management tests
+│   ├── test_tagging.py      # Tag management tests
+│   ├── test_integration.py  # Integration tests
 │   └── run_tests.py         # Test runner script
 ├── docs/                    # Documentation
 │   ├── user_guide.md        # User documentation
@@ -163,8 +169,33 @@ civitai_tagger/
 ├── Dockerfile               # Docker configuration
 ├── docker-compose.yml       # Docker compose configuration
 ├── requirements.txt         # Project dependencies
+├── activate_env.sh          # Environment activation script
 └── README.md                # Project README
 ```
+
+## Potential Improvements
+
+### Code Architecture
+1. **State Management**: Consider implementing a more robust state management pattern (e.g., State machine)
+2. **Dependency Injection**: Formalize dependency injection throughout the application for better testability
+3. **API Versioning**: Add explicit API versioning for future compatibility
+4. **Async Operations**: Increase use of async/await for file operations to improve scalability
+
+### Development Workflow
+1. **CI/CD Pipeline**: Add GitHub Actions or similar for automated testing and deployment
+2. **Code Quality Metrics**: Integrate tools like SonarQube or CodeClimate
+3. **Pre-commit Hooks**: Add pre-commit hooks for linting and formatting
+
+### User Experience
+1. **Keyboard Shortcuts**: Enhance keyboard navigation capabilities
+2. **Tag Categories**: Implement grouping of tags by categories
+3. **Batch Processing**: Add support for batch operations on multiple images
+4. **Theme Support**: Add light/dark theme support
+
+### Performance
+1. **Image Caching**: Implement client-side caching for better performance
+2. **Lazy Loading**: Add lazy loading for large tag lists
+3. **Database Storage**: Consider SQLite or similar for larger datasets instead of JSON files
 
 ## Future Enhancements
 After completing the core implementation, the following enhancements could be considered:

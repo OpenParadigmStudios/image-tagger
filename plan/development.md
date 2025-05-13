@@ -43,6 +43,22 @@
 - Apply DRY (Don't Repeat Yourself) principle to eliminate duplication
 - Follow SOLID principles when designing classes
 
+### Design Patterns
+- **State Pattern**: Consider implementing a formal state machine for session management
+- **Observer Pattern**: Continue using the current observer pattern for WebSocket notifications
+- **Factory Pattern**: Consider using factories for complex object creation
+- **Repository Pattern**: Implement for data access abstraction (especially if moving to database storage)
+- **Strategy Pattern**: Use for implementing alternative algorithms (e.g., different tagging strategies)
+- **Dependency Injection**: Formalize dependency injection throughout the application
+
+### Asynchronous Programming
+- Use `async`/`await` for I/O-bound operations, especially file operations
+- Properly handle task cancellation and cleanup
+- Use structured concurrency patterns for task management
+- Be mindful of thread safety when mixing synchronous and asynchronous code
+- Use proper error handling in asynchronous contexts
+- Consider using asyncio's synchronization primitives for coordination
+
 ### Error Handling
 - Use appropriate logging levels (error, warning, info, debug)
 - Implement comprehensive error handling with meaningful messages
@@ -78,6 +94,18 @@
 - Implement proper request validation with Pydantic models
 - Keep endpoint handlers small and delegate to service functions
 
+### REST API Design
+- Follow RESTful principles consistently
+- Use appropriate HTTP methods (GET, POST, PUT, DELETE)
+- Implement proper status codes for different scenarios
+- Consider implementing API versioning (e.g., /api/v1/)
+- Use consistent naming conventions for endpoints
+- Implement proper pagination for large collections
+- Add comprehensive API documentation with OpenAPI
+- Consider adding rate limiting for public-facing endpoints
+- Implement proper CORS configuration
+- Add request validation using Pydantic models
+
 ### Frontend Development
 - Keep JavaScript code clean and well-organized
 - Use ES6+ syntax for modern browser compatibility
@@ -107,6 +135,30 @@
 - Implement proper error handling and recovery in async operations
 - Validate data before sending to server
 - Follow the Observer pattern for UI updates
+
+### Performance Optimization
+- Implement client-side caching for images and tag data
+- Use lazy loading for large datasets
+- Consider using a database for large collections instead of JSON files
+- Optimize WebSocket message size and frequency
+- Implement pagination for large collections
+- Add compression for static assets
+- Consider using HTTP/2 for multiple parallel requests
+- Profile and optimize critical path operations
+- Implement batch processing for operations on multiple files
+- Add proper indexes if moving to database storage
+
+### Security Considerations
+- Validate all user inputs on both client and server
+- Implement proper path traversal prevention
+- Use secure file operations to prevent race conditions
+- Add proper CORS configuration
+- Consider implementing some form of authentication for multi-user scenarios
+- Implement rate limiting for public-facing APIs
+- Regularly update dependencies for security patches
+- Use content security policy headers
+- Add timeout mechanisms for long-running operations
+- Implement proper handling of sensitive data (if applicable)
 
 ### Testing
 - Run unit tests before submitting changes
@@ -153,19 +205,27 @@ as specified in `.vscode/settings.json`.
 ### Running the Server
 After activating the environment, start the server:
 ```
-python3 civitai_tagger.py /path/to/images
+python3 main.py /path/to/images
 ```
 
 The server will automatically open a web browser to the application interface.
 
 ### Running the Application
-- Use `main.py` (not `civitai_tagger.py`) to start the web server:
+- Use `main.py` to start the web server:
   ```bash
   python3 main.py <image_directory>
   ```
 - The server will be accessible at `http://localhost:8000`
 - A browser window should open automatically
 - For development, you can use browser developer tools to debug
+
+## Continuous Integration
+For future implementation:
+- Consider setting up GitHub Actions or similar CI/CD pipeline
+- Automate testing on multiple Python versions
+- Implement code quality checks
+- Automate deployment to PyPI
+- Add Docker image building and publishing
 
 ## Refactoring Guidelines
 - Identify and eliminate code duplication first
@@ -178,3 +238,23 @@ The server will automatically open a web browser to the application interface.
 - When adding new functionality, follow existing patterns
 - Use comments to explain complex logic or design decisions
 - Focus on readability and maintainability over cleverness
+
+## Documentation Strategy
+- User documentation in docs/user_guide.md
+- Developer documentation in docs/developer_guide.md
+- API documentation using OpenAPI/Swagger
+- README.md for quick start and overview
+- Inline code documentation through comprehensive docstrings
+- Implementation details in step-XX-done.md files
+- Step plans in step-XX.md files
+- Overall project status in progress.md
+- Project architecture and requirements in project.md
+
+## Future Architecture Considerations
+- Consider migration to SQLite or similar for larger datasets
+- Evaluate GraphQL for more flexible API queries if needed
+- Consider implementing a plugin system for extensibility
+- Evaluate containerization for easier deployment
+- Consider implementing a proper CLI interface with sub-commands
+- Evaluate internationalization support for non-English users
+- Consider implementing a proper authentication system for multi-user scenarios
