@@ -6,6 +6,7 @@
 - Any code change suggestion should be accompanied by corresponding documentation or plan updates when relevant
 - Update progress.md when completing implementation steps
 - Keep project.md in sync with actual implementation decisions
+- Create a step-XX-done.md file when completing a step to document the implementation details and decisions
 - Any new guidelines similar to the ones in this file that come up during coding should be worked into this document
 
 ### Python Environment
