@@ -30,6 +30,29 @@
 - Use type hints throughout the code for better IDE support and documentation
 - Write comprehensive docstrings following Google Python Style Guide
 
+### Code Quality
+- Follow the Single Responsibility Principle: each function should do one thing well
+- Keep functions small and focused (<50 lines when possible)
+- Use meaningful, descriptive variable and function names
+- Write self-documenting code that clearly communicates intent
+- Avoid deep nesting of conditionals and loops (prefer early returns)
+- Prefer composition over inheritance
+- Use dataclasses for structured data
+- Avoid global state; use dependency injection instead
+- Write idiomatic Python using built-in features when appropriate
+- Apply DRY (Don't Repeat Yourself) principle to eliminate duplication
+- Follow SOLID principles when designing classes
+
+### Error Handling
+- Use appropriate logging levels (error, warning, info, debug)
+- Implement comprehensive error handling with meaningful messages
+- Fail early when critical errors occur
+- Use try/except blocks with specific exception types for precise error handling
+- Provide clear error feedback to users via the web interface
+- Consider defining custom exception types for application-specific errors
+- Always include original exception details in logs when catching and re-raising
+- Use context managers for resource cleanup (especially file operations)
+
 ### File Structure
 - Main server functionality in civitai_tagger.py
 - Client web files in static/ directory
@@ -50,6 +73,10 @@
 - Organize API endpoints into logical router groups
 - Apply proper error handling with HTTP status codes
 - Use async functions where appropriate for file I/O
+- Implement proper dependency injection with FastAPI
+- Use middleware for cross-cutting concerns (logging, error handling)
+- Implement proper request validation with Pydantic models
+- Keep endpoint handlers small and delegate to service functions
 
 ### Frontend Development
 - Keep JavaScript code clean and well-organized
@@ -61,6 +88,8 @@
 - Use JavaScript modules (ES6 modules) for code organization
 - Follow component-based architecture for UI elements
 - Use event-driven programming for component communication
+- Prioritize user experience with responsive UI feedback
+- Follow accessibility best practices
 
 ### JavaScript Architecture
 - Modular structure with separate files for distinct functionality
@@ -74,6 +103,10 @@
 - Import/export pattern for module dependencies
 - Event-based communication between components
 - Singleton instances for service classes
+- Use promises or async/await for asynchronous operations
+- Implement proper error handling and recovery in async operations
+- Validate data before sending to server
+- Follow the Observer pattern for UI updates
 
 ### Testing
 - Run unit tests before submitting changes
@@ -82,19 +115,20 @@
 - Use temporary directories and files for clean testing
 - Test both backend API and frontend functionality
 - Implement integration tests for the complete workflow
-
-### Error Handling
-- Use appropriate logging levels (error, warning, info, debug)
-- Implement comprehensive error handling with meaningful messages
-- Fail early when critical errors occur
-- Use try/except blocks with specific exception types for precise error handling
-- Provide clear error feedback to users via the web interface
+- Use mocks and stubs for external dependencies
+- Aim for high test coverage in core functionality
+- Test happy paths and error conditions
+- Write test utility functions for common testing patterns
+- Use parameterized tests for testing multiple input variations
 
 ### Version Control
 - Keep commit messages clear and descriptive
 - Reference related issues or changes when applicable
 - Exclude .venv/ directory from version control
 - Exclude generated files and caches
+- Commit logical units of work
+- Use feature branches for significant changes
+- Review code before committing
 
 ## Known Preferences
 - Preference for pathlib over os.path for path operations
@@ -132,3 +166,15 @@ The server will automatically open a web browser to the application interface.
 - The server will be accessible at `http://localhost:8000`
 - A browser window should open automatically
 - For development, you can use browser developer tools to debug
+
+## Refactoring Guidelines
+- Identify and eliminate code duplication first
+- Move functionality to appropriate modules based on responsibility
+- Break down large functions into smaller, focused ones
+- Update tests when refactoring implementation
+- Preserve behavior when refactoring - validate with tests
+- Document the reasons for significant refactoring
+- Prefer consistent patterns throughout the codebase
+- When adding new functionality, follow existing patterns
+- Use comments to explain complex logic or design decisions
+- Focus on readability and maintainability over cleverness
