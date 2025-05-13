@@ -1,0 +1,6 @@
+# Core dependencies for CivitAI Flux Dev LoRA Tagging Assistant
+Pillow>=9.0.0  # For image validation and processing
+fastapi>=0.95.0  # Web framework with WebSocket support
+uvicorn>=0.22.0  # ASGI server for running FastAPI
+python-multipart>=0.0.6  # For handling file uploads
+websockets>=11.0.3  # WebSocket protocol implementation
