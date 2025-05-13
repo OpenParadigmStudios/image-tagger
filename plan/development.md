@@ -55,10 +55,25 @@
 - Keep JavaScript code clean and well-organized
 - Use ES6+ syntax for modern browser compatibility
 - Separate concerns: HTML for structure, CSS for styling, JS for behavior
-- Consider Vue.js for more complex UI components if needed
 - Follow responsive design principles for mobile compatibility
 - Implement proper error handling on the client side
 - Use WebSocket for real-time communication with server
+- Use JavaScript modules (ES6 modules) for code organization
+- Follow component-based architecture for UI elements
+- Use event-driven programming for component communication
+
+### JavaScript Architecture
+- Modular structure with separate files for distinct functionality
+- Main modules:
+  - `api.js`: Client for REST API communication
+  - `websocket.js`: WebSocket connection management
+  - `imageViewer.js`: Image display and navigation
+  - `tagManager.js`: Tag selection and management
+  - `sessionManager.js`: Session state and control
+  - `app.js`: Main application orchestration
+- Import/export pattern for module dependencies
+- Event-based communication between components
+- Singleton instances for service classes
 
 ### Testing
 - Run unit tests before submitting changes
@@ -108,3 +123,12 @@ python3 civitai_tagger.py /path/to/images
 ```
 
 The server will automatically open a web browser to the application interface.
+
+### Running the Application
+- Use `main.py` (not `civitai_tagger.py`) to start the web server:
+  ```bash
+  python3 main.py <image_directory>
+  ```
+- The server will be accessible at `http://localhost:8000`
+- A browser window should open automatically
+- For development, you can use browser developer tools to debug
