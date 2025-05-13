@@ -167,9 +167,13 @@ class FilesystemTest(unittest.TestCase):
         sanitized = sanitize_path(outside_path, base_dir)
         self.assertIsNone(sanitized)
 
-        # Test invalid path
+        # Test empty path (should raise ValueError)
+        with self.assertRaises(ValueError):
+            sanitize_path("")
+
+        # Test path with null character (should raise ValueError)
         invalid_path = "not a valid path:\0character"
-        with self.assertRaises(Exception):
+        with self.assertRaises(ValueError):
             sanitize_path(invalid_path)
 
 

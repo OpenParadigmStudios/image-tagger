@@ -3,7 +3,7 @@
 # API data models
 
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, field_validator
 import re
 from datetime import datetime
 from enum import Enum
@@ -14,7 +14,8 @@ class Tag(BaseModel):
     name: str = Field(..., min_length=1)
     description: Optional[str] = None
 
-    @validator('name')
+    @field_validator('name')
+    @classmethod
     def name_must_be_valid(cls, v):
         if not v or not re.match(r'^[a-zA-Z0-9_\-., ]+$', v):
             raise ValueError('Tag name contains invalid characters')
@@ -23,12 +24,14 @@ class Tag(BaseModel):
 
 class TagList(BaseModel):
     """List of tags model for API requests and responses."""
-    tags: List[str] = Field(..., min_items=0)
+    tags: List[str] = Field(..., min_length=0)
 
-    @validator('tags', each_item=True)
-    def tag_must_be_valid(cls, v):
-        if not v or not re.match(r'^[a-zA-Z0-9_\-., ]+$', v):
-            raise ValueError('Tag contains invalid characters')
+    @field_validator('tags')
+    @classmethod
+    def tags_must_be_valid(cls, v):
+        for tag in v:
+            if not tag or not re.match(r'^[a-zA-Z0-9_\-., ]+$', tag):
+                raise ValueError(f'Tag contains invalid characters: {tag}')
         return v
 
 
@@ -41,7 +44,8 @@ class ImageInfo(BaseModel):
     processed: bool = False
     tags: Optional[List[str]] = None
 
-    @validator('id', 'original_name', 'path')
+    @field_validator('id', 'original_name', 'path')
+    @classmethod
     def path_must_be_valid(cls, v):
         if not v or not re.match(r'^[a-zA-Z0-9_\-./\\]+$', v):
             raise ValueError('Path contains invalid characters')
@@ -64,7 +68,7 @@ class ImageTags(BaseModel):
 class TagUpdate(BaseModel):
     """Model for tag update operations."""
     image_id: str = Field(..., min_length=1)
-    tags: List[str] = Field(..., min_items=0)
+    tags: List[str] = Field(..., min_length=0)
 
 
 class SessionStatus(BaseModel):
@@ -121,12 +125,12 @@ class WebSocketMessage(BaseModel):
     type: str
     data: Dict[str, Any]
 
-    @validator('type')
+    @field_validator('type')
+    @classmethod
     def type_must_be_valid(cls, v):
-        # During development, accept any message type to avoid breaking changes
-        # Later this can be restricted to only the enum values
-        # if v not in [e.value for e in WebSocketMessageType]:
-        #     raise ValueError(f'Invalid message type: {v}')
+        # Validate message type against enum values
+        if v not in [e.value for e in WebSocketMessageType]:
+            raise ValueError(f'Invalid message type: {v}')
         return v
 
 
@@ -135,7 +139,8 @@ class ImageRequest(BaseModel):
     image_id: Optional[str] = None
     position: Optional[int] = None
 
-    @validator('position')
+    @field_validator('position')
+    @classmethod
     def position_must_be_valid(cls, v):
         if v is not None and v < 0:
             raise ValueError('Position must be a non-negative integer')
@@ -152,7 +157,8 @@ class PathRequest(BaseModel):
     """Path request model for API requests."""
     path: str = Field(..., min_length=1)
 
-    @validator('path')
+    @field_validator('path')
+    @classmethod
     def path_must_be_valid(cls, v):
         if not v or not re.match(r'^[a-zA-Z0-9_\-./\\]+$', v):
             raise ValueError('Path contains invalid characters')
@@ -161,9 +167,10 @@ class PathRequest(BaseModel):
 
 class BatchTagUpdate(BaseModel):
     """Batch tag update model for API requests."""
-    updates: Dict[str, List[str]] = Field(..., min_items=1)
+    updates: Dict[str, List[str]] = Field(..., min_length=1)
 
-    @validator('updates')
+    @field_validator('updates')
+    @classmethod
     def updates_must_be_valid(cls, v):
         for path, tags in v.items():
             if not re.match(r'^[a-zA-Z0-9_\-./\\]+$', path):
@@ -191,18 +198,22 @@ class SessionStats(BaseModel):
     remaining_images: int = 0
     percent_complete: float = 0.0
 
-    @validator("percent_complete", always=True)
-    def calculate_percent(cls, v, values):
+    @field_validator("percent_complete", mode="before")
+    @classmethod
+    def calculate_percent(cls, v, info):
         """Calculate the percentage of completion."""
+        values = info.data
         total = values.get("total_images", 0)
         processed = values.get("processed_images", 0)
         if total > 0:
             return round((processed / total) * 100, 2)
         return 0.0
 
-    @validator("remaining_images", always=True)
-    def calculate_remaining(cls, v, values):
+    @field_validator("remaining_images", mode="before")
+    @classmethod
+    def calculate_remaining(cls, v, info):
         """Calculate the number of remaining images."""
+        values = info.data
         total = values.get("total_images", 0)
         processed = values.get("processed_images", 0)
         return max(0, total - processed)

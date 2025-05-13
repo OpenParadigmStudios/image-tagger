@@ -2,6 +2,18 @@
 # CivitAI Flux Dev LoRA Tagging Assistant
 # Session management functionality
 
+"""
+Core session management module for the CivitAI Flux Dev LoRA Tagging Assistant.
+
+This module provides functionality for managing the session state including:
+- Safe loading and saving of session data with proper error handling
+- Thread-safe operations with locking
+- Automatic saving at configurable intervals
+- Tracking of processed images and current position
+
+The session state is persisted as JSON for easy inspection and backup.
+"""
+
 import json
 import logging
 import threading
@@ -26,11 +38,21 @@ class SessionState:
     stats: Dict[str, int] = field(default_factory=lambda: {"total_images": 0, "processed_images": 0})
 
     def update_timestamp(self) -> None:
-        """Update the last_updated timestamp."""
+        """
+        Update the last_updated timestamp to the current time.
+
+        This method sets the last_updated field to the current time in ISO 8601 format.
+        """
         self.last_updated = time.strftime("%Y-%m-%dT%H:%M:%S")
 
     def update_stats(self, total_images: Optional[int] = None, processed_images: Optional[int] = None) -> None:
-        """Update session statistics."""
+        """
+        Update session statistics.
+
+        Args:
+            total_images: Total number of images in the collection, if provided
+            processed_images: Number of processed images, if provided
+        """
         if total_images is not None:
             self.stats["total_images"] = total_images
         if processed_images is not None:
@@ -45,7 +67,7 @@ class SessionManager:
         Initialize the session manager.
 
         Args:
-            session_file: Path to the session file
+            session_file: Path to the session file where state will be persisted
         """
         self.session_file = Path(session_file)
         self.state = self._load_session()
@@ -60,6 +82,10 @@ class SessionManager:
 
         Returns:
             SessionState: The loaded or newly created session state
+
+        Notes:
+            If the session file is corrupted, it will be backed up with a .corrupted extension
+            and a new session will be created.
         """
         if not self.session_file.exists():
             logging.info(f"No session file found at {self.session_file}, creating new session")
@@ -91,6 +117,13 @@ class SessionManager:
 
         Returns:
             bool: True if save was successful
+
+        Raises:
+            SessionError: If the save operation fails
+
+        Notes:
+            This method creates a backup of the existing file before overwriting it.
+            It uses a temporary file for safe writing to prevent corruption.
         """
         current_time = time.time()
 
@@ -133,7 +166,12 @@ class SessionManager:
         pass
 
     def reset_auto_save_timer(self) -> None:
-        """Reset the auto-save timer."""
+        """
+        Reset the auto-save timer.
+
+        This method updates the last save time to the current time, effectively
+        resetting the auto-save interval.
+        """
         self._last_save_time = time.time()
 
     def set_auto_save_interval(self, seconds: int) -> None:
@@ -142,6 +180,9 @@ class SessionManager:
 
         Args:
             seconds: Auto-save interval in seconds
+
+        Raises:
+            ValueError: If seconds is less than 1
         """
         if seconds < 1:
             raise ValueError("Auto-save interval must be at least 1 second")
@@ -155,6 +196,9 @@ class SessionManager:
         Args:
             original_path: Original path of the image
             new_path: New path of the image
+
+        Notes:
+            This method is thread-safe and automatically updates the processed_images count.
         """
         with self._lock:
             self.state.processed_images[original_path] = new_path
@@ -166,6 +210,9 @@ class SessionManager:
 
         Args:
             position: Current position (image path or identifier)
+
+        Notes:
+            This method is thread-safe and marks changes as pending for auto-save.
         """
         with self._lock:
             self.state.current_position = position
@@ -176,6 +223,9 @@ class SessionManager:
 
         Args:
             tags: List of tags
+
+        Notes:
+            This method is thread-safe and replaces the entire tags list.
         """
         with self._lock:
             self.state.tags = tags
@@ -186,6 +236,9 @@ class SessionManager:
 
         Args:
             tag: Tag to add
+
+        Notes:
+            This method is thread-safe and only adds the tag if it doesn't already exist.
         """
         with self._lock:
             if tag not in self.state.tags:
@@ -197,6 +250,9 @@ class SessionManager:
 
         Args:
             tag: Tag to remove
+
+        Notes:
+            This method is thread-safe and only attempts to remove the tag if it exists.
         """
         with self._lock:
             if tag in self.state.tags:
@@ -210,6 +266,9 @@ class SessionManager:
         Args:
             total_images: Total number of images
             processed_images: Number of processed images
+
+        Notes:
+            This method is thread-safe and only updates the provided statistics.
         """
         with self._lock:
             self.state.update_stats(total_images, processed_images)

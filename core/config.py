@@ -2,11 +2,15 @@
 # CivitAI Flux Dev LoRA Tagging Assistant
 # Core configuration and argument parsing
 
+"""
+Core configuration and argument parsing module for CivitAI Flux Dev LoRA Tagging Assistant.
+Provides command line parsing and configuration management functionality.
+"""
+
 import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass

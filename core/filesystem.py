@@ -2,6 +2,19 @@
 # CivitAI Flux Dev LoRA Tagging Assistant
 # File system operations
 
+"""
+Core filesystem operations module for the CivitAI Flux Dev LoRA Tagging Assistant.
+
+This module provides file system utility functions including:
+- Directory validation and creation
+- File backup and recovery
+- Path validation and sanitization
+- Safe file operations
+- Default path management
+
+The module focuses on safe operations with proper error handling to prevent data loss.
+"""
+
 import logging
 import shutil
 from pathlib import Path
@@ -46,6 +59,10 @@ def setup_output_directory(input_dir: Path, output_name: str) -> Path:
 
     Returns:
         Path: Path to the output directory
+
+    Raises:
+        PermissionError: If the user doesn't have write permission
+        Exception: For other errors during directory creation
     """
     output_dir = input_dir / output_name
     try:
@@ -60,27 +77,28 @@ def setup_output_directory(input_dir: Path, output_name: str) -> Path:
         raise
 
 
-def create_backup(file_path: Path) -> bool:
+def create_backup(file_path: Path, suffix: str = ".bak") -> Optional[Path]:
     """
     Create a backup of a file before modification.
 
     Args:
         file_path: Path to the file to back up
+        suffix: Suffix to use for the backup file (default: .bak)
 
     Returns:
-        bool: True if backup was successful
+        Optional[Path]: Path to the backup file if successful, None otherwise
     """
     if not file_path.exists():
-        return False
+        return None
 
-    backup_path = file_path.with_suffix(f"{file_path.suffix}.bak")
+    backup_path = file_path.with_suffix(f"{file_path.suffix}{suffix}")
     try:
         shutil.copy2(file_path, backup_path)
         logging.debug(f"Created backup of {file_path} at {backup_path}")
-        return True
+        return backup_path
     except Exception as e:
         logging.warning(f"Failed to create backup of {file_path}: {e}")
-        return False
+        return None
 
 
 def setup_directories(config) -> bool:
@@ -154,12 +172,14 @@ def safe_delete(path: Path) -> bool:
         return True
 
     try:
-        backup_path = path.with_suffix(f"{path.suffix}.bak")
         if path.is_file():
-            create_backup(path)
-            path.unlink()
+            # Create backup before deletion
+            backup_path = create_backup(path)
+            if backup_path:
+                path.unlink()
         elif path.is_dir():
             # Backup directory by renaming it
+            backup_path = path.with_suffix(f"{path.suffix}.bak")
             if backup_path.exists() and backup_path.is_dir():
                 shutil.rmtree(backup_path)
             path.rename(backup_path)
@@ -178,7 +198,7 @@ def get_default_paths(config) -> dict:
         config: Application configuration
 
     Returns:
-        dict: Dictionary of default paths
+        dict: Dictionary of default paths containing output_dir, session_file, and tags_file
     """
     output_dir = config.input_directory / config.output_dir
 
@@ -199,7 +219,18 @@ def sanitize_path(path_str: str, base_dir: Optional[Path] = None) -> Optional[Pa
 
     Returns:
         Optional[Path]: Sanitized path or None if invalid
+
+    Raises:
+        ValueError: If path_str is empty or None
+        OSError: If there's an operating system error when resolving the path
     """
+    if not path_str:
+        raise ValueError("Path cannot be empty")
+
+    # Check for null character, which causes issues in file operations
+    if "\0" in path_str:
+        raise ValueError("Path contains null character")
+
     try:
         # Convert to absolute path and normalize
         path = Path(path_str).absolute().resolve()
@@ -217,6 +248,9 @@ def sanitize_path(path_str: str, base_dir: Optional[Path] = None) -> Optional[Pa
                 return None
 
         return path
-    except Exception as e:
+    except OSError as e:
         logging.error(f"Invalid path: {path_str} - {e}")
         raise
+    except Exception as e:
+        logging.error(f"Error validating path: {path_str} - {e}")
+        return None
