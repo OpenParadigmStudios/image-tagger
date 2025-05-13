@@ -1,672 +1,419 @@
 #!/usr/bin/env python3
 # CivitAI Flux Dev LoRA Tagging Assistant
-# WebSocket handling router
+# WebSocket router for real-time communication
 
+import asyncio
 import json
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Set, Optional, Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Request
+from pydantic import ValidationError
 
-from core.filesystem import save_session_state
 from models.api import ImageTags, WebSocketMessage
 
+# Create router
+router = APIRouter(
+    prefix="/ws",
+    tags=["websocket"],
+)
 
 class ConnectionManager:
-    """Manage active WebSocket connections."""
-
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket) -> None:
-        """Accept and store a new WebSocket connection."""
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logging.info(f"New WebSocket connection established. Total connections: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        """Remove a WebSocket connection."""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logging.info(f"WebSocket connection closed. Remaining connections: {len(self.active_connections)}")
-
-    async def send_message(self, websocket: WebSocket, message: Dict[str, Any]) -> None:
-        """Send a message to a specific client."""
-        try:
-            await websocket.send_text(json.dumps(message))
-        except Exception as e:
-            logging.error(f"Error sending message to client: {e}")
-            self.disconnect(websocket)
-
-    async def broadcast(self, message: Dict[str, Any]) -> None:
-        """Send a message to all connected clients."""
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(json.dumps(message))
-            except Exception as e:
-                logging.error(f"Error broadcasting to client: {e}")
-                disconnected.append(connection)
-
-        # Remove disconnected clients
-        for conn in disconnected:
-            self.disconnect(conn)
-
-
-# Create router
-router = APIRouter(tags=["websocket"])
-
-
-def get_app_state():
-    """Dependency to get application state."""
-    from server.main import app
-    return app.state.app_state
-
-
-@router.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, state: Dict = Depends(get_app_state)):
     """
-    Handle WebSocket connections for real-time updates.
+    Manage WebSocket connections with clients.
+    """
+    def __init__(self):
+        """Initialize the connection manager."""
+        self.active_connections: List[WebSocket] = []
+        self.client_info: Dict[WebSocket, Dict[str, Any]] = {}
+        self._lock = asyncio.Lock()
+
+    async def connect(self, websocket: WebSocket, client_id: str = None) -> None:
+        """
+        Accept a new WebSocket connection.
+
+        Args:
+            websocket: The WebSocket connection
+            client_id: Optional client identifier
+        """
+        await websocket.accept()
+        async with self._lock:
+            self.active_connections.append(websocket)
+            self.client_info[websocket] = {
+                "id": client_id or str(id(websocket)),
+                "connected_at": asyncio.get_event_loop().time(),
+                "last_heartbeat": asyncio.get_event_loop().time(),
+                "message_count": 0
+            }
+        logging.info(f"Client connected: {self.client_info[websocket]['id']}")
+
+    async def disconnect(self, websocket: WebSocket) -> None:
+        """
+        Remove a WebSocket connection.
+
+        Args:
+            websocket: The WebSocket connection to remove
+        """
+        async with self._lock:
+            if websocket in self.active_connections:
+                client_id = self.client_info.get(websocket, {}).get("id", "unknown")
+                self.active_connections.remove(websocket)
+                if websocket in self.client_info:
+                    del self.client_info[websocket]
+                logging.info(f"Client disconnected: {client_id}")
+
+    def disconnect_all(self) -> None:
+        """Disconnect all WebSocket connections."""
+        self.active_connections = []
+        self.client_info = {}
+        logging.info("All WebSocket connections closed")
+
+    async def send_message(self, websocket: WebSocket, message: Dict[str, Any]) -> bool:
+        """
+        Send a message to a specific client.
+
+        Args:
+            websocket: The WebSocket connection
+            message: The message to send
+
+        Returns:
+            bool: True if message was sent successfully
+        """
+        if websocket not in self.active_connections:
+            return False
+
+        try:
+            # Validate message format
+            message_obj = WebSocketMessage(type=message.get("type"), data=message.get("data", {}))
+
+            # Send message
+            await websocket.send_text(json.dumps(message_obj.dict()))
+
+            # Update stats
+            if websocket in self.client_info:
+                self.client_info[websocket]["message_count"] += 1
+
+            return True
+        except ValidationError as e:
+            logging.error(f"Invalid message format: {e}")
+            return False
+        except Exception as e:
+            logging.error(f"Error sending message: {e}")
+            await self.disconnect(websocket)
+            return False
+
+    async def broadcast(self, message: str) -> None:
+        """
+        Broadcast a message to all connected clients.
+
+        Args:
+            message: The message to broadcast
+        """
+        try:
+            # Parse the message to validate it
+            message_dict = json.loads(message)
+            message_obj = WebSocketMessage(type=message_dict.get("type"), data=message_dict.get("data", {}))
+
+            disconnected = []
+            for connection in self.active_connections:
+                try:
+                    await connection.send_text(message)
+                    if connection in self.client_info:
+                        self.client_info[connection]["message_count"] += 1
+                except Exception as e:
+                    logging.warning(f"Error broadcasting to client: {e}")
+                    disconnected.append(connection)
+
+            # Clean up disconnected clients
+            for connection in disconnected:
+                await self.disconnect(connection)
+
+            if len(self.active_connections) > 0:
+                logging.debug(f"Broadcast message to {len(self.active_connections)} clients")
+        except ValidationError as e:
+            logging.error(f"Invalid broadcast message format: {e}")
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON in broadcast message: {e}")
+        except Exception as e:
+            logging.error(f"Error during broadcast: {e}")
+
+    async def update_heartbeat(self, websocket: WebSocket) -> None:
+        """
+        Update the heartbeat timestamp for a connection.
+
+        Args:
+            websocket: The WebSocket connection
+        """
+        if websocket in self.client_info:
+            self.client_info[websocket]["last_heartbeat"] = asyncio.get_event_loop().time()
+
+    async def cleanup_stale_connections(self, max_idle_time: float = 300) -> None:
+        """
+        Remove connections that haven't sent a heartbeat in a while.
+
+        Args:
+            max_idle_time: Maximum idle time in seconds
+        """
+        current_time = asyncio.get_event_loop().time()
+        disconnected = []
+
+        for websocket, info in self.client_info.items():
+            if current_time - info["last_heartbeat"] > max_idle_time:
+                disconnected.append(websocket)
+
+        for websocket in disconnected:
+            logging.info(f"Removing stale connection: {self.client_info[websocket]['id']}")
+            await self.disconnect(websocket)
+
+    def get_connection_count(self) -> int:
+        """
+        Get the number of active connections.
+
+        Returns:
+            int: Number of active connections
+        """
+        return len(self.active_connections)
+
+    def get_connection_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics about active connections.
+
+        Returns:
+            Dict: Connection statistics
+        """
+        return {
+            "active_connections": len(self.active_connections),
+            "clients": [info for info in self.client_info.values()]
+        }
+
+
+# Create a connection manager instance
+connection_manager = ConnectionManager()
+
+
+async def handle_websocket_message(websocket: WebSocket, message_text: str, request: Request) -> None:
+    """
+    Handle incoming WebSocket messages.
 
     Args:
-        websocket: WebSocket connection
-        state: Application state
+        websocket: The WebSocket connection
+        message_text: The message text
+        request: The HTTP request
     """
-    connection_manager = state["connection_manager"]
-    await connection_manager.connect(websocket)
+    try:
+        # Parse message JSON
+        message = json.loads(message_text)
+
+        # Validate message format
+        message_obj = WebSocketMessage(type=message.get("type"), data=message.get("data", {}))
+
+        # Handle different message types
+        message_type = message_obj.type
+        data = message_obj.data
+        app_state = request.state.app_state
+
+        if message_type == "heartbeat":
+            # Update heartbeat timestamp
+            await connection_manager.update_heartbeat(websocket)
+
+            # Send heartbeat response
+            await connection_manager.send_message(
+                websocket,
+                {"type": "heartbeat", "data": {"timestamp": asyncio.get_event_loop().time()}}
+            )
+
+        elif message_type == "session_request":
+            # Client is requesting session state
+            session_state = app_state["session_manager"].state
+
+            # Send session state
+            await connection_manager.send_message(
+                websocket,
+                {
+                    "type": "session_update",
+                    "data": {
+                        "status": "active",
+                        "total_images": session_state.stats.get("total_images", 0),
+                        "processed_images": session_state.stats.get("processed_images", 0),
+                        "current_position": session_state.current_position,
+                        "last_updated": session_state.last_updated
+                    }
+                }
+            )
+
+        elif message_type == "tags_request":
+            # Client is requesting all tags
+            tags_file = app_state["paths"]["tags_file"]
+            from core.tagging import load_tags
+            all_tags = load_tags(tags_file)
+
+            # Send all tags
+            await connection_manager.send_message(
+                websocket,
+                {"type": "tag_update", "data": {"tags": all_tags}}
+            )
+
+        elif message_type == "tag_add":
+            # Client is adding a tag
+            if "tag" not in data or not data["tag"]:
+                raise ValueError("Tag is required")
+
+            new_tag = data["tag"]
+
+            # Add tag to master list
+            tags_file = app_state["paths"]["tags_file"]
+            from core.tagging import load_tags, save_tags, add_tag
+            all_tags = load_tags(tags_file)
+            all_tags = add_tag(all_tags, new_tag)
+            save_tags(tags_file, all_tags)
+
+            # Add tag to session state
+            app_state["session_manager"].add_tag(new_tag)
+            app_state["session_manager"].save()
+
+            # Broadcast tag update to all clients
+            await connection_manager.broadcast(
+                json.dumps({"type": "tag_update", "data": {"tags": all_tags}})
+            )
+
+        elif message_type == "tag_remove":
+            # Client is removing a tag
+            if "tag" not in data or not data["tag"]:
+                raise ValueError("Tag is required")
+
+            tag_to_remove = data["tag"]
+
+            # Remove tag from master list
+            tags_file = app_state["paths"]["tags_file"]
+            from core.tagging import load_tags, save_tags, remove_tag
+            all_tags = load_tags(tags_file)
+            all_tags = remove_tag(all_tags, tag_to_remove)
+            save_tags(tags_file, all_tags)
+
+            # Remove tag from session state
+            app_state["session_manager"].remove_tag(tag_to_remove)
+            app_state["session_manager"].save()
+
+            # Broadcast tag update to all clients
+            await connection_manager.broadcast(
+                json.dumps({"type": "tag_update", "data": {"tags": all_tags}})
+            )
+
+        elif message_type == "image_tags_update":
+            # Client is updating tags for an image
+            if "image_id" not in data or not data["image_id"]:
+                raise ValueError("Image ID is required")
+            if "tags" not in data:
+                raise ValueError("Tags array is required")
+
+            image_id = data["image_id"]
+            tags = data["tags"]
+
+            # Find the image path
+            session_state = app_state["session_manager"].state
+            image_path = None
+            for orig_path, new_path in session_state.processed_images.items():
+                if Path(new_path).stem == image_id:
+                    image_path = new_path
+                    break
+
+            if not image_path:
+                raise ValueError(f"Image not found: {image_id}")
+
+            # Update image tags
+            from core.tagging import save_image_tags
+            text_file_path = Path(image_path).with_suffix('.txt')
+            save_image_tags(text_file_path, tags)
+
+            # Update session state
+            app_state["session_manager"].set_current_position(image_id)
+            app_state["session_manager"].save()
+
+            # Broadcast update to all clients
+            await connection_manager.broadcast(
+                json.dumps({
+                    "type": "image_tags_update",
+                    "data": {
+                        "image_id": image_id,
+                        "tags": tags
+                    }
+                })
+            )
+
+        else:
+            # Unknown message type
+            logging.warning(f"Unknown WebSocket message type: {message_type}")
+
+    except json.JSONDecodeError as e:
+        logging.error(f"Invalid JSON in WebSocket message: {e}")
+
+    except ValidationError as e:
+        logging.error(f"Invalid WebSocket message format: {e}")
+
+    except Exception as e:
+        logging.error(f"Error handling WebSocket message: {e}")
+
+        # Send error to client
+        try:
+            await connection_manager.send_message(
+                websocket,
+                {"type": "error", "data": {"message": str(e)}}
+            )
+        except:
+            pass
+
+
+@router.websocket("/")
+async def websocket_endpoint(websocket: WebSocket, request: Request):
+    """
+    WebSocket endpoint for real-time communication.
+
+    Args:
+        websocket: The WebSocket connection
+        request: The HTTP request
+    """
+    client_id = None
 
     try:
-        # Send initial session state
-        session_state = state["session_state"]
+        # Accept connection
+        await connection_manager.connect(websocket, client_id)
+
+        # Send initial connection confirmation
         await connection_manager.send_message(
             websocket,
-            {
-                "type": "session_state",
-                "data": {
-                    "total_images": session_state.stats["total_images"],
-                    "processed_images": len(session_state.processed_images),
-                    "current_position": session_state.current_position,
-                    "tags": session_state.tags
-                }
-            }
+            {"type": "connect", "data": {"message": "Connected to server"}}
         )
 
-        # Process messages from this client
+        # Receive and process messages
         while True:
-            data = await websocket.receive_text()
-            try:
-                message = json.loads(data)
-                message_type = message.get("type", "")
-
-                # Handle different message types
-                if message_type == "ping":
-                    await connection_manager.send_message(
-                        websocket,
-                        {"type": "pong"}
-                    )
-
-                elif message_type == "get_image":
-                    image_id = message.get("data", {}).get("image_id")
-                    if image_id is not None:
-                        await handle_get_image(websocket, connection_manager, state, image_id)
-
-                elif message_type == "update_tags":
-                    image_id = message.get("data", {}).get("image_id")
-                    tags = message.get("data", {}).get("tags", [])
-                    if image_id is not None:
-                        await handle_update_tags(websocket, connection_manager, state, image_id, tags)
-
-                elif message_type == "save_session":
-                    await handle_save_session(websocket, connection_manager, state)
-
-                elif message_type == "get_tags":
-                    await handle_get_tags(websocket, connection_manager, state)
-
-                elif message_type == "add_tag":
-                    tag = message.get("data", {}).get("tag")
-                    if tag:
-                        await handle_add_tag(websocket, connection_manager, state, tag)
-
-                elif message_type == "delete_tag":
-                    tag = message.get("data", {}).get("tag")
-                    if tag:
-                        await handle_delete_tag(websocket, connection_manager, state, tag)
-
-                else:
-                    logging.warning(f"Unknown message type: {message_type}")
-                    await connection_manager.send_message(
-                        websocket,
-                        {
-                            "type": "error",
-                            "data": {"message": f"Unknown message type: {message_type}"}
-                        }
-                    )
-
-            except json.JSONDecodeError:
-                logging.error("Invalid JSON received from client")
-                await connection_manager.send_message(
-                    websocket,
-                    {
-                        "type": "error",
-                        "data": {"message": "Invalid JSON format"}
-                    }
-                )
-
-            except Exception as e:
-                logging.error(f"Error processing message: {e}")
-                await connection_manager.send_message(
-                    websocket,
-                    {
-                        "type": "error",
-                        "data": {"message": str(e)}
-                    }
-                )
+            message = await websocket.receive_text()
+            await handle_websocket_message(websocket, message, request)
 
     except WebSocketDisconnect:
-        connection_manager.disconnect(websocket)
         logging.info("WebSocket disconnected")
 
     except Exception as e:
         logging.error(f"WebSocket error: {e}")
-        connection_manager.disconnect(websocket)
 
+    finally:
+        # Clean up connection
+        await connection_manager.disconnect(websocket)
 
-async def handle_get_image(
-    websocket: WebSocket,
-    connection_manager: ConnectionManager,
-    state: Dict,
-    image_id: str
-) -> None:
-    """
-    Handle get_image message type.
 
-    Args:
-        websocket: WebSocket connection
-        connection_manager: Connection manager
-        state: Application state
-        image_id: Image ID to get
-    """
-    try:
-        image_files = state["image_files"]
-        img_index = int(image_id)
+@router.on_event("startup")
+async def start_connection_cleanup():
+    """Start periodic cleanup of stale connections."""
+    asyncio.create_task(periodic_connection_cleanup())
 
-        if img_index < 0 or img_index >= len(image_files):
-            raise ValueError(f"Invalid image index: {img_index}")
 
-        img_path = image_files[img_index]
-        original_name = img_path.name
+async def periodic_connection_cleanup():
+    """Periodically clean up stale connections."""
+    while True:
+        try:
+            await connection_manager.cleanup_stale_connections()
+        except Exception as e:
+            logging.error(f"Error during connection cleanup: {e}")
 
-        # Check if this image has been processed
-        processed = str(img_path) in state["session_state"].processed_images
-        new_name = None
-        relative_path = None
-
-        if processed:
-            relative_path = state["session_state"].processed_images.get(str(img_path))
-            if relative_path:
-                new_name = Path(relative_path).name
-
-        # Get tags if processed
-        tags = []
-        if processed and relative_path:
-            processed_path = state["config"].input_directory / relative_path
-            txt_path = processed_path.with_suffix(".txt")
-
-            if txt_path.exists():
-                tags = [line.strip() for line in txt_path.read_text(encoding='utf-8').splitlines() if line.strip()]
-
-        # Prepare response
-        image_url = f"/api/images/{image_id}/file"
-
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "image_data",
-                "data": {
-                    "id": image_id,
-                    "original_name": original_name,
-                    "new_name": new_name,
-                    "url": image_url,
-                    "processed": processed,
-                    "tags": tags
-                }
-            }
-        )
-
-        # Update current position in session state
-        state["session_state"].current_position = image_id
-
-    except ValueError as e:
-        logging.error(f"Invalid image ID: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": f"Invalid image ID: {image_id}"}
-            }
-        )
-    except Exception as e:
-        logging.error(f"Error handling get_image: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": str(e)}
-            }
-        )
-
-
-async def handle_update_tags(
-    websocket: WebSocket,
-    connection_manager: ConnectionManager,
-    state: Dict,
-    image_id: str,
-    tags: List[str]
-) -> None:
-    """
-    Handle update_tags message type.
-
-    Args:
-        websocket: WebSocket connection
-        connection_manager: Connection manager
-        state: Application state
-        image_id: Image ID to update
-        tags: List of tags for the image
-    """
-    try:
-        image_files = state["image_files"]
-        img_index = int(image_id)
-
-        if img_index < 0 or img_index >= len(image_files):
-            raise ValueError(f"Invalid image index: {img_index}")
-
-        img_path = image_files[img_index]
-        output_dir = state["output_dir"]
-
-        # Check if the image has been processed
-        processed = str(img_path) in state["session_state"].processed_images
-
-        if not processed:
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "error",
-                    "data": {"message": f"Image {image_id} has not been processed yet"}
-                }
-            )
-            return
-
-        relative_path = state["session_state"].processed_images.get(str(img_path))
-        if not relative_path:
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "error",
-                    "data": {"message": f"Cannot find processed path for image {image_id}"}
-                }
-            )
-            return
-
-        # Get processed file path
-        processed_path = output_dir / Path(relative_path).name
-        txt_path = processed_path.with_suffix(".txt")
-
-        # Import here to avoid circular imports
-        from core.filesystem import save_image_tags, normalize_tag, load_tags, save_tags, add_tag
-
-        # Normalize tags
-        normalized_tags = [normalize_tag(tag) for tag in tags if normalize_tag(tag)]
-
-        # Save tags to image file
-        if save_image_tags(txt_path, normalized_tags):
-            # Update master tags list with any new tags
-            all_tags = load_tags(state["tags_file_path"])
-            updated = False
-
-            for tag in normalized_tags:
-                if tag not in all_tags:
-                    all_tags = add_tag(all_tags, tag)
-                    updated = True
-
-            if updated:
-                save_tags(state["tags_file_path"], all_tags)
-                state["session_state"].tags = sorted(all_tags)
-
-                # Broadcast master tag list update
-                await connection_manager.broadcast({
-                    "type": "master_tags_update",
-                    "data": {"tags": sorted(all_tags)}
-                })
-
-            # Update session state
-            state["session_state"].last_updated = time.strftime("%Y-%m-%dT%H:%M:%S")
-
-            # Send confirmation message
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "tags_updated",
-                    "data": {
-                        "image_id": image_id,
-                        "tags": normalized_tags
-                    }
-                }
-            )
-
-            # Broadcast image tags update to other clients
-            for conn in connection_manager.active_connections:
-                if conn != websocket:
-                    await connection_manager.send_message(
-                        conn,
-                        {
-                            "type": "image_tags_update",
-                            "data": {
-                                "image_id": image_id,
-                                "tags": normalized_tags
-                            }
-                        }
-                    )
-
-            logging.info(f"Updated tags for image {image_id}: {len(normalized_tags)} tags")
-
-        else:
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "error",
-                    "data": {"message": f"Failed to save tags for image {image_id}"}
-                }
-            )
-
-    except ValueError:
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": f"Invalid image ID: {image_id}"}
-            }
-        )
-    except Exception as e:
-        logging.error(f"Error updating image tags: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": str(e)}
-            }
-        )
-
-
-async def handle_save_session(
-    websocket: WebSocket,
-    connection_manager: ConnectionManager,
-    state: Dict
-) -> None:
-    """
-    Handle save_session message type.
-
-    Args:
-        websocket: WebSocket connection
-        connection_manager: Connection manager
-        state: Application state
-    """
-    try:
-        # Save session state
-        success = save_session_state(state["session_file_path"], state["session_state"])
-
-        # Send response
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "session_saved",
-                "data": {
-                    "success": success,
-                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S")
-                }
-            }
-        )
-
-    except Exception as e:
-        logging.error(f"Error handling save_session: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": str(e)}
-            }
-        )
-
-
-async def handle_get_tags(
-    websocket: WebSocket,
-    connection_manager: ConnectionManager,
-    state: Dict
-) -> None:
-    """
-    Handle get_tags message type.
-
-    Args:
-        websocket: WebSocket connection
-        connection_manager: Connection manager
-        state: Application state
-    """
-    try:
-        # Import here to avoid circular imports
-        from core.filesystem import load_tags
-
-        # Get tags from file
-        tags = load_tags(state["tags_file_path"])
-
-        # Send tags to client
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "tags_list",
-                "data": {"tags": sorted(tags)}
-            }
-        )
-
-    except Exception as e:
-        logging.error(f"Error getting tags: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": str(e)}
-            }
-        )
-
-
-async def handle_add_tag(
-    websocket: WebSocket,
-    connection_manager: ConnectionManager,
-    state: Dict,
-    tag: str
-) -> None:
-    """
-    Handle add_tag message type.
-
-    Args:
-        websocket: WebSocket connection
-        connection_manager: Connection manager
-        state: Application state
-        tag: Tag to add
-    """
-    try:
-        # Import here to avoid circular imports
-        from core.filesystem import load_tags, save_tags, add_tag, normalize_tag
-
-        normalized_tag = normalize_tag(tag)
-        if not normalized_tag:
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "error",
-                    "data": {"message": "Tag cannot be empty"}
-                }
-            )
-            return
-
-        # Get existing tags
-        existing_tags = load_tags(state["tags_file_path"])
-
-        # Add new tag
-        updated_tags = add_tag(existing_tags, normalized_tag)
-
-        # Save if changed
-        if len(updated_tags) > len(existing_tags):
-            save_tags(state["tags_file_path"], updated_tags)
-
-            # Update session state
-            state["session_state"].tags = sorted(updated_tags)
-
-            # Send confirmation to this client
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "tag_added",
-                    "data": {
-                        "tag": normalized_tag,
-                        "tags": sorted(updated_tags)
-                    }
-                }
-            )
-
-            # Broadcast update to other clients
-            for conn in connection_manager.active_connections:
-                if conn != websocket:
-                    await connection_manager.send_message(
-                        conn,
-                        {
-                            "type": "tag_update",
-                            "data": {
-                                "action": "add",
-                                "tag": normalized_tag,
-                                "tags": sorted(updated_tags)
-                            }
-                        }
-                    )
-
-            logging.info(f"Added tag via WebSocket: {normalized_tag}")
-        else:
-            # Tag already exists
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "tag_exists",
-                    "data": {
-                        "tag": normalized_tag,
-                        "tags": sorted(updated_tags)
-                    }
-                }
-            )
-
-    except Exception as e:
-        logging.error(f"Error adding tag: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": str(e)}
-            }
-        )
-
-
-async def handle_delete_tag(
-    websocket: WebSocket,
-    connection_manager: ConnectionManager,
-    state: Dict,
-    tag: str
-) -> None:
-    """
-    Handle delete_tag message type.
-
-    Args:
-        websocket: WebSocket connection
-        connection_manager: Connection manager
-        state: Application state
-        tag: Tag to delete
-    """
-    try:
-        # Import here to avoid circular imports
-        from core.filesystem import load_tags, save_tags, remove_tag
-
-        # Get existing tags
-        existing_tags = load_tags(state["tags_file_path"])
-
-        # Get count before removal
-        before_count = len(existing_tags)
-
-        # Remove tag
-        updated_tags = remove_tag(existing_tags, tag)
-
-        # Save if changed
-        if len(updated_tags) < before_count:
-            save_tags(state["tags_file_path"], updated_tags)
-
-            # Update session state
-            state["session_state"].tags = sorted(updated_tags)
-
-            # Send confirmation to this client
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "tag_deleted",
-                    "data": {
-                        "tag": tag,
-                        "tags": sorted(updated_tags)
-                    }
-                }
-            )
-
-            # Broadcast update to other clients
-            for conn in connection_manager.active_connections:
-                if conn != websocket:
-                    await connection_manager.send_message(
-                        conn,
-                        {
-                            "type": "tag_update",
-                            "data": {
-                                "action": "delete",
-                                "tag": tag,
-                                "tags": sorted(updated_tags)
-                            }
-                        }
-                    )
-
-            logging.info(f"Deleted tag via WebSocket: {tag}")
-        else:
-            # Tag not found
-            await connection_manager.send_message(
-                websocket,
-                {
-                    "type": "tag_not_found",
-                    "data": {
-                        "tag": tag,
-                        "tags": sorted(updated_tags)
-                    }
-                }
-            )
-
-    except Exception as e:
-        logging.error(f"Error deleting tag: {e}")
-        await connection_manager.send_message(
-            websocket,
-            {
-                "type": "error",
-                "data": {"message": str(e)}
-            }
-        )
-
-
-async def handle_websocket_connection(websocket: WebSocket, app_state: Dict) -> None:
-    """
-    Handle a WebSocket connection.
-
-    Args:
-        websocket: WebSocket connection
-        app_state: Application state
-    """
-    await websocket_endpoint(websocket, app_state)
+        await asyncio.sleep(60)  # Run every minute

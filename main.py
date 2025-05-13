@@ -3,6 +3,7 @@
 # Main entry point
 
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -37,7 +38,7 @@ def main() -> int:
 
     except KeyboardInterrupt:
         logging.info("Process interrupted by user.")
-        return 1
+        return 0
     except Exception as e:
         logging.error(f"Unexpected error: {e}")
         if 'config' in locals() and config.verbose:
@@ -46,4 +47,12 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Register signal handlers for clean shutdown
+    def handle_signal(sig, frame):
+        logging.info(f"Received signal {sig}, exiting gracefully.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, handle_signal)
+    signal.signal(signal.SIGTERM, handle_signal)
+
     sys.exit(main())

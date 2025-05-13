@@ -9,7 +9,7 @@ from typing import List, Dict, Set
 from fastapi import APIRouter, Depends, HTTPException
 
 from models.api import Tag, TagList, ImageTags, WebSocketMessage
-from core.filesystem import (
+from core.tagging import (
     load_tags,
     save_tags,
     add_tag,

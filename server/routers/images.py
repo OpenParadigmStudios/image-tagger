@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi.responses import FileResponse
 
 from models.api import ImageInfo, ImageList, ImageTags
-from core.filesystem import validate_image_with_pillow
+from core.image_processing import validate_image_with_pillow
 
 # Create router
 router = APIRouter(

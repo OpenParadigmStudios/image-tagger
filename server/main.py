@@ -1,141 +1,205 @@
 #!/usr/bin/env python3
 # CivitAI Flux Dev LoRA Tagging Assistant
-# Main server application with FastAPI
+# Server implementation
 
+import asyncio
 import json
 import logging
+import os
+import signal
 import sys
 import webbrowser
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Depends
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.responses import FileResponse
+
+# Import routers
+from server.routers import images, tags, websocket
 
 # Import core modules
-sys.path.append(str(Path(__file__).parent.parent))
 from core.config import AppConfig
-from core.filesystem import (
-    setup_directories,
-    scan_image_files,
-    setup_output_directory,
-    setup_tags_file,
-    get_processed_images,
-    save_session_state,
-    SessionState
-)
-from server.routers.websocket import ConnectionManager
-
-# Create global FastAPI app instance
-app = FastAPI(
-    title="CivitAI Flux Dev LoRA Tagging Assistant",
-    description="Web interface for tagging images for CivitAI Flux Dev LoRA model training",
-    version="1.0.0"
-)
+from core.filesystem import get_default_paths
+from core.session import SessionManager, SessionState
+from core.image_processing import scan_image_files
+from core.tagging import setup_tags_file
 
 
-def initialize_application_state(config: AppConfig) -> Dict:
+# Global state to store application context
+app_state: Dict[str, Any] = {
+    "config": None,
+    "session_manager": None,
+    "paths": None,
+    "connection_manager": None,
+    "image_files": None,
+    "shutdown_event": None
+}
+
+
+def setup_signal_handlers(app_state: Dict[str, Any]) -> None:
     """
-    Initialize the application state and resources.
+    Set up signal handlers for graceful shutdown.
 
     Args:
-        config: Application configuration
+        app_state: Global application state
+    """
+    def handle_shutdown(sig, frame):
+        logging.info(f"Received signal {sig}, initiating graceful shutdown...")
+
+        # Save session state
+        if app_state["session_manager"] is not None:
+            try:
+                app_state["session_manager"].save(force=True)
+                logging.info("Session state saved")
+            except Exception as e:
+                logging.error(f"Error saving session state during shutdown: {e}")
+
+        # Notify connected clients
+        if app_state["connection_manager"] is not None:
+            try:
+                shutdown_message = {
+                    "type": "shutdown",
+                    "data": {"message": "Server shutting down"}
+                }
+                app_state["connection_manager"].broadcast(json.dumps(shutdown_message))
+                logging.info("Shutdown notification sent to clients")
+            except Exception as e:
+                logging.error(f"Error notifying clients during shutdown: {e}")
+
+        # Set shutdown event
+        if app_state["shutdown_event"] is not None:
+            app_state["shutdown_event"].set()
+
+        # Exit with success code
+        logging.info("Shutdown complete")
+        sys.exit(0)
+
+    # Register handlers for SIGINT and SIGTERM
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    logging.info("Signal handlers registered for graceful shutdown")
+
+
+def init_app() -> FastAPI:
+    """
+    Initialize the FastAPI application.
 
     Returns:
-        Dictionary with application state
+        FastAPI: The initialized application
     """
-    # Set up output directory
-    output_dir = setup_output_directory(config.input_directory, config.output_dir)
+    app = FastAPI(
+        title="CivitAI Flux Dev LoRA Tagging Assistant",
+        description="Web-based image tagging for CivitAI Flux Dev LoRA model training",
+        version="1.0.0"
+    )
 
-    # Define paths for session and tags files
-    session_file_path = output_dir / "session.json"
-    tags_file_path = output_dir / "tags.txt"
-
-    # Scan for image files
-    image_files = scan_image_files(config.input_directory)
-
-    # Initialize or load session state
-    if config.resume and session_file_path.exists():
-        session_state = get_processed_images(session_file_path)
-        logging.info(f"Resuming session: {len(session_state.processed_images)} images already processed.")
-    else:
-        session_state = SessionState()
-        session_state.stats["total_images"] = len(image_files)
-        logging.info(f"Starting new session with {len(image_files)} images.")
-
-    # Load or initialize tags
-    tags = setup_tags_file(tags_file_path)
-    if tags and not session_state.tags:
-        session_state.tags = tags
-
-    # Save initial session state
-    save_session_state(session_file_path, session_state)
-
-    # Create WebSocket connection manager
-    connection_manager = ConnectionManager()
-
-    # Return complete application state
-    return {
-        "config": config,
-        "session_state": session_state,
-        "image_files": image_files,
-        "output_dir": output_dir,
-        "session_file_path": session_file_path,
-        "tags_file_path": tags_file_path,
-        "connection_manager": connection_manager
-    }
-
-
-def create_app(config: AppConfig) -> FastAPI:
-    """
-    Create and configure the FastAPI application.
-
-    Args:
-        config: Application configuration
-
-    Returns:
-        FastAPI: Configured FastAPI application
-    """
-    # Initialize application state
-    state = initialize_application_state(config)
-
-    # Store the state in the app
-    app.state.app_state = state
-
-    # Serve static files
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-
-    # Import routers
-    from server.routers.images import router as images_router
-    from server.routers.tags import router as tags_router
-    from server.routers.websocket import router as websocket_router
+    # Set up CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # Allow all origins
+        allow_credentials=True,
+        allow_methods=["*"],  # Allow all methods
+        allow_headers=["*"],  # Allow all headers
+    )
 
     # Include routers
-    app.include_router(images_router)
-    app.include_router(tags_router)
-    app.include_router(websocket_router)
+    app.include_router(images.router)
+    app.include_router(tags.router)
+    app.include_router(websocket.router)
 
-    # Basic routes
+    # Serve static files
+    static_dir = Path(__file__).parent.parent / "static"
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+    # Root endpoint for the web UI
     @app.get("/")
     async def get_index():
-        """Serve the main HTML page."""
-        return FileResponse("static/index.html")
+        index_path = static_dir / "index.html"
+        if not index_path.exists():
+            raise HTTPException(status_code=404, detail="Web UI not found")
+        return FileResponse(index_path)
 
-    @app.get("/api/status")
-    async def get_status():
-        """Get the current application status."""
-        session_state = app.state.app_state["session_state"]
-        return {
-            "status": "running",
-            "total_images": session_state.stats["total_images"],
-            "processed_images": len(session_state.processed_images),
-            "current_position": session_state.current_position,
-            "last_updated": session_state.last_updated
-        }
+    # Provide access to app_state throughout the application
+    @app.middleware("http")
+    async def add_app_state(request: Request, call_next):
+        request.state.app_state = app_state
+        response = await call_next(request)
+        return response
 
     return app
+
+
+async def startup_event(app: FastAPI) -> None:
+    """
+    Initialize application state on startup.
+
+    Args:
+        app: FastAPI application instance
+    """
+    config = app_state["config"]
+
+    # Set up paths
+    paths = get_default_paths(config)
+    app_state["paths"] = paths
+
+    # Create shutdown event
+    app_state["shutdown_event"] = asyncio.Event()
+
+    # Scan for images
+    try:
+        image_files = scan_image_files(config.input_directory)
+        app_state["image_files"] = image_files
+    except Exception as e:
+        logging.error(f"Error scanning images: {e}")
+        app_state["image_files"] = []
+
+    # Set up session manager
+    session_file = paths["session_file"]
+    session_manager = SessionManager(session_file)
+    session_manager.set_auto_save_interval(config.auto_save)
+    app_state["session_manager"] = session_manager
+
+    # Get WebSocket connection manager from websocket router
+    app_state["connection_manager"] = websocket.connection_manager
+
+    # Setup tags file
+    tags_file = paths["tags_file"]
+    setup_tags_file(tags_file)
+
+    # Update session stats
+    session_manager.update_stats(
+        total_images=len(image_files) if image_files else 0,
+        processed_images=len(session_manager.state.processed_images)
+    )
+
+    logging.info("Application state initialized")
+
+
+async def shutdown_event(app: FastAPI) -> None:
+    """
+    Clean up resources during shutdown.
+
+    Args:
+        app: FastAPI application instance
+    """
+    # Save session state
+    if app_state["session_manager"] is not None:
+        try:
+            app_state["session_manager"].save(force=True)
+            logging.info("Session state saved during shutdown")
+        except Exception as e:
+            logging.error(f"Error saving session state during shutdown: {e}")
+
+    # Close WebSocket connections
+    if app_state["connection_manager"] is not None:
+        app_state["connection_manager"].disconnect_all()
+        logging.info("All WebSocket connections closed")
+
+    logging.info("Shutdown complete")
 
 
 def start_server(config: AppConfig) -> None:
@@ -145,41 +209,29 @@ def start_server(config: AppConfig) -> None:
     Args:
         config: Application configuration
     """
-    # Create FastAPI app
-    app = create_app(config)
+    # Store configuration in app_state
+    app_state["config"] = config
 
-    # Attempt to open a web browser
-    url = f"http://{config.host}:{config.port}"
-    try:
+    # Create FastAPI application
+    app = init_app()
+
+    # Setup signal handlers
+    setup_signal_handlers(app_state)
+
+    # Add startup and shutdown event handlers
+    app.add_event_handler("startup", lambda: startup_event(app))
+    app.add_event_handler("shutdown", lambda: shutdown_event(app))
+
+    # Open browser if not in test mode
+    if not os.environ.get("TAGGER_TEST_MODE"):
+        url = f"http://{config.host}:{config.port}"
         webbrowser.open(url)
-        logging.info(f"Opened web browser to {url}")
-    except Exception as e:
-        logging.warning(f"Failed to open web browser: {e}")
-        logging.info(f"Please manually open {url} in your web browser")
+        logging.info(f"Opening browser at {url}")
 
-    # Start Uvicorn server
+    # Start the server
     uvicorn.run(
         app,
         host=config.host,
         port=config.port,
         log_level="info"
     )
-
-
-def graceful_shutdown(app: FastAPI) -> None:
-    """
-    Perform graceful shutdown tasks.
-
-    Args:
-        app: FastAPI application instance
-    """
-    # Save session state
-    if hasattr(app, "state") and hasattr(app.state, "app_state"):
-        session_file_path = app.state.app_state.get("session_file_path")
-        session_state = app.state.app_state.get("session_state")
-
-        if session_file_path and session_state:
-            logging.info("Saving session state before shutdown...")
-            save_session_state(session_file_path, session_state)
-
-    logging.info("Server shutdown complete.")

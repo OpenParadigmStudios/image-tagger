@@ -1,294 +1,286 @@
-# Step 7: Complete Integration and Workflow
+# Step 7: Code Refactoring and Integration
 
 ## Overview
-In this step, we'll integrate all the components developed in previous steps into a complete, functional workflow. We'll ensure that the server and client work together seamlessly, handle all error conditions gracefully, and provide a smooth user experience from start to finish.
+This step focuses on code quality, reducing technical debt, and creating a cohesive integrated application. We'll consolidate duplicate code, improve error handling, and ensure all components work together seamlessly.
 
-## Requirements
-- Connect all server-side components into a cohesive system
-- Ensure proper interaction between client and server
-- Implement complete end-to-end workflow
-- Add save/exit functionality with clean shutdown
-- Provide proper error handling across the entire system
-- Implement automatic session recovery
-- Add logging and monitoring capabilities
+## Objectives
+1. Resolve code duplication between `civitai_tagger.py` and modular components
+2. Improve error handling across component boundaries
+3. Implement graceful shutdown and cleanup
+4. Complete the end-to-end workflow
+5. Optimize performance in critical sections
+6. Enhance security throughout the application
 
-## Implementation Details
+## Code Restructuring Tasks
 
-### System Integration
+### 1. Move Functionality from civitai_tagger.py to Modules
+Currently, much of the core functionality is in `civitai_tagger.py` while newer components are properly modularized. This leads to duplication and potential inconsistencies.
 
-#### 1. Server Component Integration
-- Connect FastAPI endpoints with file system operations
-- Integrate WebSocket handlers with session management
-- Ensure tag management system works with the session state
-- Implement proper startup and shutdown procedures
-- Add error handling middleware to catch and process exceptions
+#### Action Plan:
+- Move remaining file operations from `civitai_tagger.py` to `core/filesystem.py`
+- Ensure consistency in function signatures and behavior
+- Update imports across the codebase
+- Add proper type hints and docstrings to all functions
+- Remove duplicated code after successful migration
 
-#### 2. Client-Server Communication
-- Ensure robust WebSocket communication
-- Implement error recovery for network issues
-- Add authentication tokens for security (optional)
-- Create status heartbeat mechanism
-
-#### 3. Workflow Orchestration
-- Create end-to-end image processing workflow
-- Implement state transitions between different operations
-- Add progress tracking throughout the process
-- Ensure proper data synchronization between client and server
-
-### Key Functions to Implement
-
-#### 1. Entry Point and Main Application
 ```python
-def main() -> int:
-    """
-    Main entry point for the application.
+# Example refactoring approach - moving functionality
+# From civitai_tagger.py to core/filesystem.py
 
-    Returns:
-        int: Exit code
-    """
-    try:
-        # Parse command line arguments
-        config = parse_arguments()
-
-        # Setup logging
-        setup_logging(config.verbose)
-
-        # Validate and prepare directories
-        if not setup_directories(config):
-            return 1
-
-        # Start FastAPI server
-        start_server(config)
-
-        return 0
-    except Exception as e:
-        logging.error(f"Unexpected error: {e}")
-        if 'config' in locals() and config.verbose:
-            logging.exception("Exception details:")
-        return 1
-```
-
-#### 2. Server Startup and Configuration
-```python
-def start_server(config: AppConfig) -> None:
-    """
-    Configure and start the FastAPI server.
+# In core/filesystem.py
+def process_image(
+    original_path: Path,
+    output_dir: Path,
+    prefix: str,
+    processed_images: Dict[str, str]
+) -> Tuple[Dict[str, str], Path, Path]:
+    """Process a single image file.
 
     Args:
-        config: Application configuration
-    """
-    # Create FastAPI app
-    app = FastAPI(title="CivitAI Tagger")
-
-    # Load state and prepare resources
-    state = initialize_application_state(config)
-
-    # Set up API routes with dependencies
-    setup_routes(app, state)
-
-    # Mount static files
-    app.mount("/static", StaticFiles(directory="static"), name="static")
-
-    # Configure WebSocket
-    setup_websocket(app, state)
-
-    # Open browser to application URL
-    open_browser(config.host, config.port)
-
-    # Start the server
-    uvicorn.run(app, host=config.host, port=config.port)
-```
-
-#### 3. Application State Initialization
-```python
-def initialize_application_state(config: AppConfig) -> Dict:
-    """
-    Initialize the application state and resources.
-
-    Args:
-        config: Application configuration
+        original_path: Path to the original image
+        output_dir: Path to the output directory
+        prefix: Filename prefix for renamed images
+        processed_images: Dictionary of already processed images
 
     Returns:
-        Dictionary with application state
+        Tuple containing:
+        - Updated processed_images dictionary
+        - Path to the copied image file
+        - Path to the created text file
     """
-    # Set up output directory
-    output_dir = setup_output_directory(config.input_directory, config.output_dir)
+    # Implementation moved from civitai_tagger.py
+    ...
 
-    # Define paths for session and tags files
-    session_file_path = output_dir / "session.json"
-    tags_file_path = output_dir / "tags.txt"
+```
 
-    # Scan for image files
-    image_files = scan_image_files(config.input_directory)
+### 2. Improve SessionState Management
+The current SessionState handling is scattered across multiple modules and needs consolidation.
 
-    # Initialize or load session state
-    if config.resume and session_file_path.exists():
-        session_state = get_processed_images(session_file_path)
-        logging.info(f"Resuming session: {len(session_state.processed_images)} images already processed.")
-    else:
-        session_state = SessionState()
-        session_state.stats["total_images"] = len(image_files)
-        logging.info(f"Starting new session with {len(image_files)} images.")
+#### Action Plan:
+- Create a dedicated module for session management
+- Implement atomic updates with proper locking
+- Add session validation
+- Enhance session recovery for interrupted processes
 
-    # Load or initialize tags
-    tags = setup_tags_file(tags_file_path)
-    if tags and not session_state.tags:
-        session_state.tags = tags
+```python
+# In core/session.py
+class SessionManager:
+    """Manage session state with safe operations."""
 
-    # Save initial session state
-    save_session_state(session_file_path, session_state)
+    def __init__(self, session_file: Path):
+        self.session_file = session_file
+        self.state = self._load_session()
+        self._lock = threading.Lock()
 
-    # Create WebSocket connection manager
-    connection_manager = ConnectionManager()
+    def _load_session(self) -> SessionState:
+        """Load session from file or create new."""
+        ...
 
-    # Return complete application state
-    return {
-        "config": config,
-        "session_state": session_state,
-        "image_files": image_files,
-        "output_dir": output_dir,
-        "session_file_path": session_file_path,
-        "tags_file_path": tags_file_path,
-        "connection_manager": connection_manager
+    def save(self) -> bool:
+        """Save session state to file with locking."""
+        with self._lock:
+            # Safe file writing logic
+            ...
+```
+
+### 3. Improve Error Handling
+
+#### Action Plan:
+- Implement consistent error handling patterns
+- Add proper exception types for different error conditions
+- Create error recovery strategies for critical operations
+- Ensure proper error propagation to UI
+
+```python
+# Custom exception types
+class ImageProcessingError(Exception):
+    """Raised when image processing fails."""
+    pass
+
+class SessionError(Exception):
+    """Raised when session operations fail."""
+    pass
+
+# Example error handling pattern
+def process_with_recovery(func, *args, max_retries=3, **kwargs):
+    """Execute a function with automatic retry on failure."""
+    retries = 0
+    while retries < max_retries:
+        try:
+            return func(*args, **kwargs)
+        except (IOError, OSError) as e:
+            retries += 1
+            if retries >= max_retries:
+                raise
+            time.sleep(0.5)  # Back off before retry
+    raise RuntimeError(f"Failed after {max_retries} retries")
+```
+
+### 4. Enhance WebSocket Communication
+
+#### Action Plan:
+- Implement proper connection management with reconnection logic
+- Add message validation and error handling
+- Create a more consistent message format for all operations
+- Implement proper message queuing for reliable delivery
+
+```javascript
+// In websocket.js
+class WebSocketClient {
+    constructor(url) {
+        this.url = url;
+        this.socket = null;
+        this.messageQueue = [];
+        this.connected = false;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+        this.reconnectTimeoutId = null;
+        this.eventHandlers = {};
     }
+
+    connect() {
+        // Connection logic with reconnection
+        ...
+    }
+
+    send(message) {
+        // Send with queueing for reliability
+        if (this.connected) {
+            this.socket.send(JSON.stringify(message));
+        } else {
+            this.messageQueue.push(message);
+        }
+    }
+
+    // Other methods...
+}
 ```
 
-#### 4. Shutdown and Cleanup
+### 5. Consolidate API Models
+The current API models are spread across different files, which makes them hard to maintain.
+
+#### Action Plan:
+- Centralize all API models in `models/api.py`
+- Ensure consistency in model design
+- Add proper validation for all fields
+- Create documentation for API models
+
 ```python
-def graceful_shutdown(state: Dict) -> None:
-    """
-    Perform a graceful shutdown, saving state and releasing resources.
+# In models/api.py
+from pydantic import BaseModel, Field, validator
+from typing import List, Dict, Optional
+import re
 
-    Args:
-        state: Application state dictionary
-    """
-    # Save final session state
-    save_session_state(state["session_file_path"], state["session_state"])
+class ImageInfo(BaseModel):
+    """Information about an image file."""
+    original_path: str
+    output_path: str
+    tag_file_path: str
 
-    # Notify connected clients
-    shutdown_message = {"type": "shutdown", "data": {"message": "Server shutting down"}}
-    state["connection_manager"].broadcast(json.dumps(shutdown_message))
+    @validator('original_path', 'output_path', 'tag_file_path')
+    def paths_must_be_valid(cls, v):
+        if not v or not re.match(r'^[a-zA-Z0-9_\-./\\]+$', v):
+            raise ValueError('Path contains invalid characters')
+        return v
 
-    # Close connections
-    state["connection_manager"].disconnect_all()
+class TagUpdate(BaseModel):
+    """Model for tag update operations."""
+    image_id: str = Field(..., min_length=1)
+    tags: List[str] = Field(..., min_items=0)
 
-    logging.info("Application shutdown complete.")
+    @validator('tags', each_item=True)
+    def tag_must_be_valid(cls, v):
+        if not v or not re.match(r'^[a-zA-Z0-9_\-., ]+$', v):
+            raise ValueError('Tag contains invalid characters')
+        return v
 ```
 
-#### 5. WebSocket Connection Manager
+### 6. Implement Graceful Shutdown
+
+#### Action Plan:
+- Add proper signal handlers for SIGINT and SIGTERM
+- Implement resource cleanup on shutdown
+- Ensure all data is saved before shutdown
+- Notify connected clients of shutdown
+
 ```python
-class ConnectionManager:
-    """Manage active WebSocket connections."""
+# In server/main.py
+def setup_signal_handlers(app_state):
+    """Set up signal handlers for graceful shutdown."""
+    def handle_shutdown(sig, frame):
+        logging.info(f"Received signal {sig}, shutting down...")
+        # Save session state
+        save_session_state(
+            app_state["session_file_path"],
+            app_state["session_state"]
+        )
 
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        # Notify clients
+        shutdown_message = {
+            "type": "shutdown",
+            "data": {"message": "Server shutting down"}
+        }
+        app_state["connection_manager"].broadcast(
+            json.dumps(shutdown_message)
+        )
 
-    async def connect(self, websocket: WebSocket) -> None:
-        """Accept and store a new WebSocket connection."""
-        await websocket.accept()
-        self.active_connections.append(websocket)
+        # Stop the server
+        sys.exit(0)
 
-    def disconnect(self, websocket: WebSocket) -> None:
-        """Remove a WebSocket connection."""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-
-    async def disconnect_all(self) -> None:
-        """Close and remove all connections."""
-        for connection in self.active_connections.copy():
-            await connection.close()
-            self.disconnect(connection)
-
-    async def broadcast(self, message: str) -> None:
-        """Send a message to all connected clients."""
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except Exception as e:
-                logging.error(f"Error broadcasting to client: {e}")
-                self.disconnect(connection)
+    # Register signal handlers
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
 ```
 
-### Error Handling and Recovery
-- Implement a consistent error handling approach across components
-- Add proper exception handling for all user inputs
-- Create recovery mechanisms for unexpected situations
-- Add informative error messages for common issues
-- Implement graceful degradation for components that fail
+## Integration Tasks
 
-### Security Considerations
-- Validate all user inputs before processing
-- Implement path traversal protection for file operations
-- Add security headers to FastAPI responses
-- Use secure protocols for client-server communication
-- Consider adding basic authentication for production use
+### 1. Complete End-to-End Workflow Testing
+Test the complete application workflow from start to finish to ensure all components work together properly.
 
-## Code Structure
+#### Action Plan:
+- Create integration tests covering the entire workflow
+- Implement test fixtures for reproducible testing
+- Test image processing, tag management, and session handling
+- Verify client-server communication
 
-### Final Project Structure
-```
-civitai_tagger/
-  ├── main.py                  # Entry point and main application
-  ├── server/
-  │   ├── api.py               # API route handlers
-  │   ├── websocket.py         # WebSocket implementation
-  │   └── state.py             # Application state management
-  ├── core/
-  │   ├── config.py            # Configuration and arguments
-  │   ├── filesystem.py        # File system operations
-  │   ├── image_processing.py  # Image handling functions
-  │   └── tagging.py           # Tag management functions
-  ├── models/
-  │   ├── config.py            # Configuration data models
-  │   ├── session.py           # Session state models
-  │   └── api.py               # API request/response models
-  ├── static/                  # Web client files
-  │   ├── index.html           # Main HTML page
-  │   ├── css/                 # CSS style files
-  │   └── js/                  # JavaScript client code
-  └── test/                    # Test files
-      ├── test_filesystem.py   # File system tests
-      ├── test_api.py          # API endpoint tests
-      └── test_tagging.py      # Tag management tests
-```
+### 2. Security Enhancements
 
-### Processing Flow
-1. User starts the application with directory path
-2. Server initializes and opens browser to web interface
-3. Client connects to server via WebSocket
-4. Server sends initial state and first image
-5. User tags images through the web interface
-6. Server processes and stores tag information
-7. Server updates session state periodically
-8. Client shows progress and allows navigation
-9. User completes tagging or exits session
-10. Server performs graceful shutdown
+#### Action Plan:
+- Implement input validation for all user inputs
+- Add path traversal protection for file operations
+- Use secure HTTP headers for FastAPI responses
+- Sanitize file paths to prevent injection attacks
+
+### 3. Performance Optimization
+
+#### Action Plan:
+- Profile code to identify bottlenecks
+- Optimize image handling for better performance
+- Improve WebSocket performance for large tag sets
+- Optimize session state handling for faster operations
 
 ## Testing Strategy
-- End-to-end testing of the complete workflow
-- Integration testing for server components
-- Test shutdown and startup procedures
-- Test error handling and recovery
-- Test with real-world image sets of various sizes
-- Test session resume functionality
-- Performance testing with large image collections
 
-## Implementation Steps
-1. Create the main application entry point
-2. Implement the server startup procedure
-3. Develop the application state initialization
-4. Create the WebSocket connection manager
-5. Implement graceful shutdown and cleanup
-6. Add comprehensive error handling
-7. Connect server components with client interface
-8. Test the complete workflow end-to-end
-9. Add documentation for the integrated system
-10. Perform final refinements based on testing
+1. Unit Tests:
+   - Create or update tests for all refactored functions
+   - Ensure high coverage for core functionality
+   - Test error handling paths
 
-## Next Steps After Completion
-Once this step is complete, we'll have:
-- A fully functional end-to-end system
-- Seamless client-server integration
-- Robust error handling and recovery
-- Clean shutdown and resource management
-- Ready for testing with real-world image sets
+2. Integration Tests:
+   - Test complete workflow from end to end
+   - Test client-server communication
+   - Test session persistence and recovery
+
+3. Stress/Performance Tests:
+   - Test with large tag sets
+   - Test with large image directories
+   - Test with multiple concurrent connections
+
+## Completion Criteria
+- Code duplication resolved
+- All functionality properly modularized
+- End-to-end workflow tested and working
+- Error handling improved across all components
+- Graceful shutdown implemented
+- Performance optimized for key operations
+- Documentation updated to reflect changes
