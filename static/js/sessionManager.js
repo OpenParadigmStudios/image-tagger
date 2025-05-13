@@ -5,9 +5,10 @@
 
 import { api } from './api.js';
 import { websocket } from './websocket.js';
+import { imageViewer } from './imageViewer.js';
 
 /**
- * Session Manager class to handle session state and control
+ * Session Manager class to handle session state and controls
  */
 class SessionManager {
     /**
@@ -15,11 +16,11 @@ class SessionManager {
      */
     constructor() {
         // State
-        this.sessionState = {
-            totalImages: 0,
-            processedImages: 0,
-            currentPosition: null,
-            lastUpdated: null
+        this.sessionInfo = {
+            total_images: 0,
+            processed_images: 0,
+            current_position: null,
+            version: null
         };
 
         // Elements
@@ -27,23 +28,31 @@ class SessionManager {
             totalImages: document.getElementById('total-images'),
             processedImages: document.getElementById('processed-images'),
             progressBar: document.getElementById('progress-bar'),
-            saveSessionButton: document.getElementById('save-session-button'),
+            saveButton: document.getElementById('save-session-button'),
             exitButton: document.getElementById('exit-button'),
             statusMessage: document.getElementById('status-message')
         };
 
         // Bind methods
+        this.initialize = this.initialize.bind(this);
+        this.updateSessionStatus = this.updateSessionStatus.bind(this);
+        this.showStatusMessage = this.showStatusMessage.bind(this);
         this.saveSession = this.saveSession.bind(this);
-        this.exitSession = this.exitSession.bind(this);
-        this.updateStatusMessage = this.updateStatusMessage.bind(this);
+        this.confirmExit = this.confirmExit.bind(this);
 
         // Event listeners
-        this.elements.saveSessionButton.addEventListener('click', this.saveSession);
-        this.elements.exitButton.addEventListener('click', this.exitSession);
+        this.elements.saveButton.addEventListener('click', this.saveSession);
+        this.elements.exitButton.addEventListener('click', this.confirmExit);
 
         // WebSocket event listeners
-        document.addEventListener('ws:session_state', (e) => this.handleSessionState(e.detail));
-        document.addEventListener('ws:connectionStatusChanged', (e) => this.handleConnectionChange(e.detail));
+        document.addEventListener('ws:session_update', (e) => this.handleSessionUpdate(e.detail));
+        document.addEventListener('ws:stats_update', (e) => this.handleStatsUpdate(e.detail));
+        document.addEventListener('ws:session_saved', (e) => this.handleSessionSaved(e.detail));
+        document.addEventListener('ws:connect', () => this.handleConnection());
+        document.addEventListener('ws:connectionStatusChanged', (e) => this.handleConnectionStatus(e.detail));
+
+        // Handle image loaded events to track current position
+        document.addEventListener('imageLoaded', (e) => this.handleImageLoaded(e.detail));
     }
 
     /**
@@ -51,12 +60,13 @@ class SessionManager {
      */
     async initialize() {
         try {
-            // Get initial status
-            const status = await api.getStatus();
-            this.updateSessionState(status);
+            // Request initial session state
+            console.log('Initializing session manager...');
+            websocket.sendMessage('session_request');
+            this.showStatusMessage('Session initialized', 'success');
         } catch (error) {
             console.error('Error initializing session:', error);
-            this.updateStatusMessage('Error loading session state', 'error');
+            this.showStatusMessage('Error initializing session', 'error');
         }
     }
 
@@ -64,114 +74,142 @@ class SessionManager {
      * Handle session state update from WebSocket
      * @param {Object} data - Session state data
      */
-    handleSessionState(data) {
-        this.updateSessionState({
-            total_images: data.total_images,
-            processed_images: data.processed_images,
-            current_position: data.current_position
-        });
+    handleSessionUpdate(data) {
+        console.log('Session update received:', data);
+
+        // Update session info
+        this.sessionInfo = {
+            ...this.sessionInfo,
+            current_position: data.current_position,
+            version: data.version,
+            ...data.stats
+        };
+
+        // Update UI
+        this.updateSessionStatus();
+
+        // Initialize the image viewer with total images count
+        if (this.sessionInfo.total_images > 0) {
+            imageViewer.initialize(this.sessionInfo.total_images);
+
+            // If no image is loaded yet and we have a valid current position, load it
+            if (imageViewer.currentImageId === null && this.sessionInfo.current_position !== null) {
+                console.log('Loading image from session position:', this.sessionInfo.current_position);
+                websocket.sendMessage('get_image', { image_id: this.sessionInfo.current_position });
+            } else if (imageViewer.currentImageId === null && this.sessionInfo.total_images > 0) {
+                // Otherwise start with the first image
+                console.log('No current position, loading first image');
+                websocket.sendMessage('get_image', { image_id: '0' });
+            }
+        }
+    }
+
+    /**
+     * Handle stats update from WebSocket
+     * @param {Object} data - Stats data
+     */
+    handleStatsUpdate(data) {
+        // Update session info with new stats
+        this.sessionInfo = {
+            ...this.sessionInfo,
+            ...data
+        };
+
+        // Update UI
+        this.updateSessionStatus();
+    }
+
+    /**
+     * Handle session saved confirmation
+     * @param {Object} data - Session saved data
+     */
+    handleSessionSaved(data) {
+        this.showStatusMessage('Session saved successfully', 'success');
+    }
+
+    /**
+     * Handle WebSocket connection event
+     */
+    handleConnection() {
+        // Request session state when connected
+        console.log('WebSocket connected, requesting session info...');
+        websocket.sendMessage('session_request');
+
+        this.showStatusMessage('Connected to server', 'success');
     }
 
     /**
      * Handle connection status change
      * @param {Object} data - Connection status data
      */
-    handleConnectionChange(data) {
+    handleConnectionStatus(data) {
         const connectionStatus = document.getElementById('connection-status');
-
         if (data.connected) {
             connectionStatus.textContent = 'Connected';
-            connectionStatus.classList.add('connected');
-            connectionStatus.classList.remove('disconnected');
-            this.updateStatusMessage('Connected to server');
+            connectionStatus.className = 'status-indicator connected';
+            this.showStatusMessage('Connected to server', 'success');
         } else {
             connectionStatus.textContent = 'Disconnected';
-            connectionStatus.classList.remove('connected');
-            connectionStatus.classList.add('disconnected');
-            this.updateStatusMessage('Disconnected from server', 'warning');
+            connectionStatus.className = 'status-indicator disconnected';
+            this.showStatusMessage('Disconnected from server', 'error');
         }
     }
 
     /**
-     * Update session state with new data
-     * @param {Object} data - Session state data
+     * Handle image loaded event to track current position
+     * @param {Object} data - Image loaded event data
      */
-    updateSessionState(data) {
-        // Update state
-        if (data.total_images !== undefined) {
-            this.sessionState.totalImages = data.total_images;
-        }
+    handleImageLoaded(data) {
+        // Update current position in session info
+        this.sessionInfo.current_position = data.imageId;
+        console.log('Current position updated:', this.sessionInfo.current_position);
+    }
 
-        if (data.processed_images !== undefined) {
-            this.sessionState.processedImages = data.processed_images;
-        }
-
-        if (data.current_position !== undefined) {
-            this.sessionState.currentPosition = data.current_position;
-        }
-
-        if (data.last_updated) {
-            this.sessionState.lastUpdated = new Date(data.last_updated);
-        }
-
-        // Update UI
-        this.elements.totalImages.textContent = this.sessionState.totalImages;
-        this.elements.processedImages.textContent = this.sessionState.processedImages;
+    /**
+     * Update session status display
+     */
+    updateSessionStatus() {
+        // Update counts
+        this.elements.totalImages.textContent = this.sessionInfo.total_images || 0;
+        this.elements.processedImages.textContent = this.sessionInfo.processed_images || 0;
 
         // Update progress bar
-        const progressPercent = this.sessionState.totalImages > 0
-            ? (this.sessionState.processedImages / this.sessionState.totalImages) * 100
+        const progress = this.sessionInfo.total_images > 0
+            ? (this.sessionInfo.processed_images / this.sessionInfo.total_images) * 100
             : 0;
-        this.elements.progressBar.style.width = `${progressPercent}%`;
+        this.elements.progressBar.style.width = `${progress}%`;
     }
 
     /**
-     * Save the current session state
-     */
-    async saveSession() {
-        try {
-            // Request save via WebSocket
-            websocket.sendMessage('save_session');
-            this.updateStatusMessage('Session saved');
-        } catch (error) {
-            console.error('Error saving session:', error);
-            this.updateStatusMessage('Error saving session', 'error');
-        }
-    }
-
-    /**
-     * Exit the current session
-     */
-    exitSession() {
-        if (confirm('Are you sure you want to exit? All unsaved changes will be lost.')) {
-            // Save session before exiting
-            this.saveSession().then(() => {
-                window.close();
-            });
-        }
-    }
-
-    /**
-     * Update the status message
+     * Show a status message
      * @param {string} message - Message to display
-     * @param {string} type - Message type (info, success, warning, error)
+     * @param {string} type - Message type (success, error, info)
      */
-    updateStatusMessage(message, type = 'info') {
+    showStatusMessage(message, type = 'info') {
         this.elements.statusMessage.textContent = message;
+        this.elements.statusMessage.className = `status-message ${type}`;
 
-        // Remove existing classes
-        this.elements.statusMessage.classList.remove('info', 'success', 'warning', 'error');
+        // Auto-clear the message after 5 seconds
+        setTimeout(() => {
+            this.elements.statusMessage.textContent = '';
+            this.elements.statusMessage.className = 'status-message';
+        }, 5000);
+    }
 
-        // Add type class
-        this.elements.statusMessage.classList.add(type);
+    /**
+     * Save the session
+     */
+    saveSession() {
+        this.showStatusMessage('Saving session...', 'info');
+        websocket.sendMessage('save_session');
+    }
 
-        // Clear after delay unless it's an error
-        if (type !== 'error') {
-            setTimeout(() => {
-                if (this.elements.statusMessage.textContent === message) {
-                    this.elements.statusMessage.textContent = '';
-                }
-            }, 3000);
+    /**
+     * Confirm before exiting
+     */
+    confirmExit() {
+        if (confirm('Are you sure you want to exit? Make sure to save your session first.')) {
+            window.close();
         }
     }
 }

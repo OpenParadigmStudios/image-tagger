@@ -136,19 +136,54 @@ async def get_image_file(
     try:
         img_path, _ = get_image_by_id(image_id, state)
 
+        # Determine correct serving path
+        serving_path = None
+
         # Check if it's been processed (should serve from output dir)
         if str(img_path) in state["session_state"].processed_images:
             relative_path = state["session_state"].processed_images.get(str(img_path))
             if relative_path:
                 processed_path = state["config"].input_directory / relative_path
                 if processed_path.exists():
-                    return FileResponse(processed_path)
+                    serving_path = processed_path
 
-        # Otherwise serve original
-        if img_path.exists() and validate_image_with_pillow(img_path):
-            return FileResponse(img_path)
-        else:
-            raise HTTPException(status_code=404, detail="Image file not found")
+        # If not found in processed images, serve the original
+        if serving_path is None:
+            if img_path.exists() and validate_image_with_pillow(img_path):
+                serving_path = img_path
+            else:
+                raise HTTPException(status_code=404, detail="Image file not found")
+
+        # Ensure image can be loaded
+        if not validate_image_with_pillow(serving_path):
+            logging.error(f"Invalid image file: {serving_path}")
+            raise HTTPException(status_code=415, detail="Invalid image file")
+
+        # Get content type based on extension
+        content_type = None
+        suffix = serving_path.suffix.lower()
+        if suffix in ['.jpg', '.jpeg']:
+            content_type = 'image/jpeg'
+        elif suffix == '.png':
+            content_type = 'image/png'
+        elif suffix == '.gif':
+            content_type = 'image/gif'
+        elif suffix == '.webp':
+            content_type = 'image/webp'
+        elif suffix in ['.tif', '.tiff']:
+            content_type = 'image/tiff'
+        elif suffix == '.bmp':
+            content_type = 'image/bmp'
+
+        # Log the image being served
+        logging.debug(f"Serving image {serving_path} with content type {content_type}")
+
+        # Return file response with appropriate headers
+        return FileResponse(
+            path=serving_path,
+            media_type=content_type,
+            filename=serving_path.name
+        )
     except HTTPException:
         raise
     except Exception as e:

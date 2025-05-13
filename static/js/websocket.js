@@ -15,11 +15,22 @@ class WebSocketClient {
         this.connected = false;
         this.reconnectTimeout = null;
         this.pingInterval = null;
+        this.messageQueue = [];
+        this.connectionAttempts = 0;
+        this.maxConnectionAttempts = 5;
         this.messageHandlers = new Map();
 
         // Default message handlers
         this.registerHandler('pong', () => {
             // Ping response received, connection is active
+            this.connectionAttempts = 0; // Reset connection attempts on successful ping
+        });
+
+        // Register connect handler
+        this.registerHandler('connect', (data) => {
+            console.log('Connected to server:', data);
+            // Request session data immediately after connecting
+            this.sendMessage('session_request');
         });
     }
 
@@ -36,12 +47,15 @@ class WebSocketClient {
      * Connect to the WebSocket server
      * @returns {Promise<boolean>} - True if connection is successful
      */
-    connect() {
+    async connect() {
         return new Promise((resolve) => {
             if (this.socket && this.connected) {
                 resolve(true);
                 return;
             }
+
+            // Increment connection attempts
+            this.connectionAttempts++;
 
             // Clear any existing reconnect timeout
             if (this.reconnectTimeout) {
@@ -49,41 +63,65 @@ class WebSocketClient {
                 this.reconnectTimeout = null;
             }
 
+            // Check max connection attempts
+            if (this.connectionAttempts > this.maxConnectionAttempts) {
+                console.error(`Failed to connect after ${this.maxConnectionAttempts} attempts`);
+                this.dispatchEvent('connectionStatusChanged', { connected: false });
+                resolve(false);
+                return;
+            }
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/ws`;
+            console.log(`Connecting to WebSocket server at ${wsUrl}...`);
 
-            this.socket = new WebSocket(wsUrl);
+            try {
+                this.socket = new WebSocket(wsUrl);
 
-            this.socket.onopen = () => {
-                this.connected = true;
-                this.startPingInterval();
+                this.socket.onopen = () => {
+                    console.log('WebSocket connection established');
+                    this.connected = true;
+                    this.startPingInterval();
 
-                // Send initial heartbeat immediately
-                this.sendMessage('heartbeat');
+                    // Reset connection attempts on successful connection
+                    this.connectionAttempts = 0;
 
-                this.dispatchEvent('connectionStatusChanged', { connected: true });
-                resolve(true);
-            };
+                    // Send initial heartbeat immediately
+                    this.sendMessage('heartbeat');
 
-            this.socket.onmessage = (event) => {
-                try {
-                    const message = JSON.parse(event.data);
-                    this.handleMessage(message);
-                } catch (error) {
-                    console.error('Error parsing WebSocket message:', error);
-                }
-            };
+                    // Process any queued messages
+                    this.processQueue();
 
-            this.socket.onclose = () => {
+                    this.dispatchEvent('connectionStatusChanged', { connected: true });
+                    resolve(true);
+                };
+
+                this.socket.onmessage = (event) => {
+                    try {
+                        const message = JSON.parse(event.data);
+                        console.log('WebSocket message received:', message.type);
+                        this.handleMessage(message);
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error);
+                    }
+                };
+
+                this.socket.onclose = (event) => {
+                    console.log(`WebSocket connection closed: Code ${event.code}`);
+                    this.handleDisconnect();
+                    resolve(false);
+                };
+
+                this.socket.onerror = (error) => {
+                    console.error('WebSocket Error:', error);
+                    this.handleDisconnect();
+                    resolve(false);
+                };
+            } catch (error) {
+                console.error('Error creating WebSocket connection:', error);
                 this.handleDisconnect();
                 resolve(false);
-            };
-
-            this.socket.onerror = (error) => {
-                console.error('WebSocket Error:', error);
-                this.handleDisconnect();
-                resolve(false);
-            };
+            }
         });
     }
 
@@ -96,8 +134,25 @@ class WebSocketClient {
 
         this.dispatchEvent('connectionStatusChanged', { connected: false });
 
-        // Attempt to reconnect after 3 seconds
-        this.reconnectTimeout = setTimeout(() => this.connect(), 3000);
+        // Attempt to reconnect after delay, with increasing backoff
+        const reconnectDelay = Math.min(1000 * Math.pow(1.5, this.connectionAttempts), 30000);
+        console.log(`Will attempt to reconnect in ${reconnectDelay}ms`);
+
+        this.reconnectTimeout = setTimeout(() => this.connect(), reconnectDelay);
+    }
+
+    /**
+     * Process queued messages
+     */
+    processQueue() {
+        if (this.messageQueue.length > 0) {
+            console.log(`Processing ${this.messageQueue.length} queued messages`);
+
+            while (this.messageQueue.length > 0) {
+                const { type, data } = this.messageQueue.shift();
+                this.sendMessage(type, data);
+            }
+        }
     }
 
     /**
@@ -124,10 +179,18 @@ class WebSocketClient {
      * Send a message to the server
      * @param {string} type - Message type
      * @param {Object} data - Message data
+     * @returns {boolean} - True if the message was sent successfully
      */
     sendMessage(type, data = {}) {
         if (!this.connected || !this.socket) {
-            console.warn('Cannot send message: WebSocket not connected');
+            console.warn(`Cannot send message ${type}: WebSocket not connected, queuing...`);
+            this.messageQueue.push({ type, data });
+
+            // Try to connect if not connected
+            if (!this.connected && !this.reconnectTimeout) {
+                this.connect();
+            }
+
             return false;
         }
 
@@ -136,7 +199,8 @@ class WebSocketClient {
             this.socket.send(message);
             return true;
         } catch (error) {
-            console.error('Error sending message:', error);
+            console.error(`Error sending message ${type}:`, error);
+            this.messageQueue.push({ type, data });
             return false;
         }
     }
@@ -180,11 +244,16 @@ class WebSocketClient {
         }
 
         if (this.socket) {
-            this.socket.close();
+            try {
+                this.socket.close(1000, "Intentional disconnect");
+            } catch (e) {
+                console.error("Error closing WebSocket connection:", e);
+            }
             this.socket = null;
         }
 
         this.connected = false;
+        this.dispatchEvent('connectionStatusChanged', { connected: false });
     }
 }
 

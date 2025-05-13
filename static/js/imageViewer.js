@@ -72,24 +72,50 @@ class ImageViewer {
      * @param {Object} data - Image data
      */
     handleImageData(data) {
+        console.log('Received image data:', data);
         this.imageInfo = data;
         this.currentImageId = data.id;
 
-        // Update image
-        this.elements.image.src = data.url;
-        this.elements.imageName.textContent = data.original_name;
+        // Update image with loading status
+        this.elements.image.classList.add('loading');
+
+        // Create a new image object to preload and handle errors
+        const imgLoader = new Image();
+        imgLoader.onload = () => {
+            // Once loaded, update the displayed image
+            this.elements.image.src = data.url;
+            this.elements.image.classList.remove('loading');
+            this.elements.imageName.textContent = data.original_name;
+
+            // Update dimensions if available
+            if (imgLoader.naturalWidth && imgLoader.naturalHeight) {
+                this.elements.imageDimensions.textContent =
+                    `${imgLoader.naturalWidth} × ${imgLoader.naturalHeight}`;
+            }
+
+            // Dispatch event that image has been loaded
+            const event = new CustomEvent('imageLoaded', {
+                detail: {
+                    imageId: data.id,
+                    tags: data.tags || []
+                }
+            });
+            document.dispatchEvent(event);
+        };
+
+        imgLoader.onerror = () => {
+            console.error('Failed to load image:', data.url);
+            this.elements.image.src = '/static/assets/placeholder.png';
+            this.elements.image.classList.remove('loading');
+            this.elements.imageName.textContent = `Error loading: ${data.original_name}`;
+            this.elements.imageDimensions.textContent = '';
+        };
+
+        // Start loading the image
+        imgLoader.src = data.url;
 
         // Update navigation buttons
         this.updateNavigationButtons();
-
-        // Dispatch event that image has been loaded
-        const event = new CustomEvent('imageLoaded', {
-            detail: {
-                imageId: data.id,
-                tags: data.tags || []
-            }
-        });
-        document.dispatchEvent(event);
     }
 
     /**
