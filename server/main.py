@@ -26,47 +26,14 @@ from core.filesystem import (
     save_session_state,
     SessionState
 )
+from server.routers.websocket import ConnectionManager
 
-
-class ConnectionManager:
-    """Manage active WebSocket connections."""
-
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket) -> None:
-        """Accept and store a new WebSocket connection."""
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logging.info(f"New WebSocket connection established. Total connections: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket) -> None:
-        """Remove a WebSocket connection."""
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-            logging.info(f"WebSocket connection closed. Remaining connections: {len(self.active_connections)}")
-
-    async def send_message(self, websocket: WebSocket, message: str) -> None:
-        """Send a message to a specific client."""
-        try:
-            await websocket.send_text(message)
-        except Exception as e:
-            logging.error(f"Error sending message to client: {e}")
-            self.disconnect(websocket)
-
-    async def broadcast(self, message: str) -> None:
-        """Send a message to all connected clients."""
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                await connection.send_text(message)
-            except Exception as e:
-                logging.error(f"Error broadcasting to client: {e}")
-                disconnected.append(connection)
-
-        # Remove disconnected clients
-        for conn in disconnected:
-            self.disconnect(conn)
+# Create global FastAPI app instance
+app = FastAPI(
+    title="CivitAI Flux Dev LoRA Tagging Assistant",
+    description="Web interface for tagging images for CivitAI Flux Dev LoRA model training",
+    version="1.0.0"
+)
 
 
 def initialize_application_state(config: AppConfig) -> Dict:
@@ -131,13 +98,6 @@ def create_app(config: AppConfig) -> FastAPI:
     Returns:
         FastAPI: Configured FastAPI application
     """
-    # Create FastAPI app
-    app = FastAPI(
-        title="CivitAI Flux Dev LoRA Tagging Assistant",
-        description="Web interface for tagging images for CivitAI Flux Dev LoRA model training",
-        version="1.0.0"
-    )
-
     # Initialize application state
     state = initialize_application_state(config)
 
@@ -146,6 +106,16 @@ def create_app(config: AppConfig) -> FastAPI:
 
     # Serve static files
     app.mount("/static", StaticFiles(directory="static"), name="static")
+
+    # Import routers
+    from server.routers.images import router as images_router
+    from server.routers.tags import router as tags_router
+    from server.routers.websocket import router as websocket_router
+
+    # Include routers
+    app.include_router(images_router)
+    app.include_router(tags_router)
+    app.include_router(websocket_router)
 
     # Basic routes
     @app.get("/")
@@ -165,89 +135,51 @@ def create_app(config: AppConfig) -> FastAPI:
             "last_updated": session_state.last_updated
         }
 
-    # WebSocket endpoint
-    @app.websocket("/ws")
-    async def websocket_endpoint(websocket: WebSocket):
-        """Handle WebSocket connections for real-time updates."""
-        connection_manager = app.state.app_state["connection_manager"]
-        await connection_manager.connect(websocket)
-
-        try:
-            # Send initial session state
-            session_state = app.state.app_state["session_state"]
-            await connection_manager.send_message(
-                websocket,
-                json.dumps({
-                    "type": "session_state",
-                    "data": {
-                        "total_images": session_state.stats["total_images"],
-                        "processed_images": len(session_state.processed_images),
-                        "current_position": session_state.current_position,
-                        "tags": session_state.tags
-                    }
-                })
-            )
-
-            # Process messages from this client
-            while True:
-                data = await websocket.receive_text()
-                message = json.loads(data)
-
-                # Process different message types
-                if message["type"] == "ping":
-                    await connection_manager.send_message(
-                        websocket,
-                        json.dumps({"type": "pong"})
-                    )
-
-                # Add other message handlers here
-
-        except WebSocketDisconnect:
-            connection_manager.disconnect(websocket)
-        except Exception as e:
-            logging.error(f"WebSocket error: {e}")
-            connection_manager.disconnect(websocket)
-
-    # Import and include API routers here
-    # from server.routers import images, tags
-    # app.include_router(images.router, prefix="/api")
-    # app.include_router(tags.router, prefix="/api")
-
     return app
 
 
 def start_server(config: AppConfig) -> None:
     """
-    Start the FastAPI server with the given configuration.
+    Start the FastAPI server.
 
     Args:
         config: Application configuration
     """
+    # Create FastAPI app
     app = create_app(config)
 
-    # Open browser to the application
-    webbrowser.open(f"http://{config.host}:{config.port}")
+    # Attempt to open a web browser
+    url = f"http://{config.host}:{config.port}"
+    try:
+        webbrowser.open(url)
+        logging.info(f"Opened web browser to {url}")
+    except Exception as e:
+        logging.warning(f"Failed to open web browser: {e}")
+        logging.info(f"Please manually open {url} in your web browser")
 
-    # Start the server
-    uvicorn.run(app, host=config.host, port=config.port)
+    # Start Uvicorn server
+    uvicorn.run(
+        app,
+        host=config.host,
+        port=config.port,
+        log_level="info"
+    )
 
 
 def graceful_shutdown(app: FastAPI) -> None:
     """
-    Perform a graceful shutdown, saving state and releasing resources.
+    Perform graceful shutdown tasks.
 
     Args:
-        app: FastAPI application
+        app: FastAPI application instance
     """
-    logging.info("Performing graceful shutdown")
+    # Save session state
+    if hasattr(app, "state") and hasattr(app.state, "app_state"):
+        session_file_path = app.state.app_state.get("session_file_path")
+        session_state = app.state.app_state.get("session_state")
 
-    # Get application state
-    state = app.state.app_state
+        if session_file_path and session_state:
+            logging.info("Saving session state before shutdown...")
+            save_session_state(session_file_path, session_state)
 
-    # Save final session state
-    save_session_state(state["session_file_path"], state["session_state"])
-
-    # Notify connected clients (in a production app, this would be properly handled)
-    # state["connection_manager"].broadcast(json.dumps({"type": "shutdown", "data": {"message": "Server shutting down"}}))
-
-    logging.info("Application shutdown complete.")
+    logging.info("Server shutdown complete.")
