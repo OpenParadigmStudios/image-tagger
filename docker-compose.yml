@@ -1,0 +1,16 @@
+version: '3'
+
+services:
+  civitai-tagger:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the images directory - change this to your local path
+      - ./images:/app/images
+      # Mount the output directory for persistent output
+      - ./docker_output:/app/output
+    command: ["/app/images", "--host", "0.0.0.0", "--port", "8000", "-o", "output"]
+    restart: unless-stopped
+    # Add the following line if you want the container to run in interactive mode
+    tty: true
