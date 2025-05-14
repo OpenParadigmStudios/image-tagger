@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # CivitAI Flux Dev LoRA Tagging Assistant - Progress
 
 ## Project Progress
